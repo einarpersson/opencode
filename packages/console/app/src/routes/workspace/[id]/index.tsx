@@ -1,58 +1,67 @@
+import { Show, createMemo } from "solid-js"
+import { createStore } from "solid-js/store"
+import { createAsync, useParams, useAction, useSubmission } from "@solidjs/router"
 import { NewUserSection } from "./new-user-section"
-import { UsageSection } from "./usage-section"
 import { ModelSection } from "./model-section"
 import { ProviderSection } from "./provider-section"
-import { IconLogo } from "~/component/icon"
-import { createAsync, useParams, useAction, useSubmission } from "@solidjs/router"
-import { querySessionInfo, queryBillingInfo, createCheckoutUrl } from "../common"
-import { Show, createMemo } from "solid-js"
+import { IconZen } from "~/component/icon"
+import { querySessionInfo, queryBillingInfo, createCheckoutUrl, formatBalance } from "../common"
+import { useI18n } from "~/context/i18n"
+import { useLanguage } from "~/context/language"
 
 export default function () {
   const params = useParams()
-  const userInfo = createAsync(() => querySessionInfo(params.id))
-  const billingInfo = createAsync(() => queryBillingInfo(params.id))
-  const createCheckoutUrlAction = useAction(createCheckoutUrl)
-  const createCheckoutUrlSubmission = useSubmission(createCheckoutUrl)
-
-  const balanceAmount = createMemo(() => {
-    return ((billingInfo()?.balance ?? 0) / 100000000).toFixed(2)
+  const i18n = useI18n()
+  const language = useLanguage()
+  const userInfo = createAsync(() => querySessionInfo(params.id!))
+  const billingInfo = createAsync(() => queryBillingInfo(params.id!))
+  const checkoutAction = useAction(createCheckoutUrl)
+  const checkoutSubmission = useSubmission(createCheckoutUrl)
+  const [store, setStore] = createStore({
+    checkoutRedirecting: false,
   })
+  const balance = createMemo(() => formatBalance(billingInfo()?.balance ?? 0))
+
+  async function onClickCheckout() {
+    const baseUrl = window.location.href
+    const checkout = await checkoutAction(params.id!, billingInfo()!.reloadAmount, baseUrl, baseUrl)
+    if (checkout && checkout.data) {
+      setStore("checkoutRedirecting", true)
+      window.location.href = checkout.data
+    }
+  }
 
   return (
     <div data-page="workspace-[id]">
       <section data-component="header-section">
-        <IconLogo />
+        <IconZen />
         <p>
           <span>
-            Reliable optimized models for coding agents.{" "}
-            <a target="_blank" href="/docs/zen">
-              Learn more
+            {i18n.t("workspace.home.banner.beforeLink")}{" "}
+            <a target="_blank" href={language.route("/docs/zen")}>
+              {i18n.t("common.learnMore")}
             </a>
             .
           </span>
           <Show when={userInfo()?.isAdmin}>
             <span data-slot="billing-info">
               <Show
-                when={billingInfo()?.reload}
+                when={billingInfo()?.customerID}
                 fallback={
                   <button
                     data-color="primary"
                     data-size="sm"
-                    disabled={createCheckoutUrlSubmission.pending}
-                    onClick={async () => {
-                      const baseUrl = window.location.href
-                      const checkoutUrl = await createCheckoutUrlAction(params.id, baseUrl, baseUrl)
-                      if (checkoutUrl) {
-                        window.location.href = checkoutUrl
-                      }
-                    }}
+                    disabled={checkoutSubmission.pending || store.checkoutRedirecting}
+                    onClick={onClickCheckout}
                   >
-                    {createCheckoutUrlSubmission.pending ? "Loading..." : "Enable billing"}
+                    {checkoutSubmission.pending || store.checkoutRedirecting
+                      ? i18n.t("workspace.home.billing.loading")
+                      : i18n.t("workspace.home.billing.enable")}
                   </button>
                 }
               >
                 <span data-slot="balance">
-                  Current balance <b>${balanceAmount() === "-0.00" ? "0.00" : balanceAmount()}</b>
+                  {i18n.t("workspace.home.billing.currentBalance")} <b>${balance()}</b>
                 </span>
               </Show>
             </span>
@@ -66,7 +75,6 @@ export default function () {
         <Show when={userInfo()?.isAdmin}>
           <ProviderSection />
         </Show>
-        <UsageSection />
       </div>
     </div>
   )

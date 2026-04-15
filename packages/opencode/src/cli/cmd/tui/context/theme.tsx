@@ -1,639 +1,434 @@
-import { SyntaxStyle, RGBA } from "@opentui/core"
-import { createMemo, createSignal } from "solid-js"
-import { useSync } from "@tui/context/sync"
+import { CliRenderEvents, SyntaxStyle, RGBA, type TerminalColors } from "@opentui/core"
+import path from "path"
+import { createEffect, createMemo, onCleanup, onMount } from "solid-js"
 import { createSimpleContext } from "./helper"
-import aura from "../../../../../../tui/internal/theme/themes/aura.json" with { type: "json" }
-import ayu from "../../../../../../tui/internal/theme/themes/ayu.json" with { type: "json" }
-import catppuccin from "../../../../../../tui/internal/theme/themes/catppuccin.json" with { type: "json" }
-import cobalt2 from "../../../../../../tui/internal/theme/themes/cobalt2.json" with { type: "json" }
-import dracula from "../../../../../../tui/internal/theme/themes/dracula.json" with { type: "json" }
-import everforest from "../../../../../../tui/internal/theme/themes/everforest.json" with { type: "json" }
-import github from "../../../../../../tui/internal/theme/themes/github.json" with { type: "json" }
-import gruvbox from "../../../../../../tui/internal/theme/themes/gruvbox.json" with { type: "json" }
-import kanagawa from "../../../../../../tui/internal/theme/themes/kanagawa.json" with { type: "json" }
-import material from "../../../../../../tui/internal/theme/themes/material.json" with { type: "json" }
-import matrix from "../../../../../../tui/internal/theme/themes/matrix.json" with { type: "json" }
-import monokai from "../../../../../../tui/internal/theme/themes/monokai.json" with { type: "json" }
-import nord from "../../../../../../tui/internal/theme/themes/nord.json" with { type: "json" }
-import onedark from "../../../../../../tui/internal/theme/themes/one-dark.json" with { type: "json" }
-import opencode from "../../../../../../tui/internal/theme/themes/opencode.json" with { type: "json" }
-import palenight from "../../../../../../tui/internal/theme/themes/palenight.json" with { type: "json" }
-import rosepine from "../../../../../../tui/internal/theme/themes/rosepine.json" with { type: "json" }
-import solarized from "../../../../../../tui/internal/theme/themes/solarized.json" with { type: "json" }
-import synthwave84 from "../../../../../../tui/internal/theme/themes/synthwave84.json" with { type: "json" }
-import tokyonight from "../../../../../../tui/internal/theme/themes/tokyonight.json" with { type: "json" }
-import vesper from "../../../../../../tui/internal/theme/themes/vesper.json" with { type: "json" }
-import zenburn from "../../../../../../tui/internal/theme/themes/zenburn.json" with { type: "json" }
+import { Glob } from "@opencode-ai/shared/util/glob"
+import aura from "./theme/aura.json" with { type: "json" }
+import ayu from "./theme/ayu.json" with { type: "json" }
+import catppuccin from "./theme/catppuccin.json" with { type: "json" }
+import catppuccinFrappe from "./theme/catppuccin-frappe.json" with { type: "json" }
+import catppuccinMacchiato from "./theme/catppuccin-macchiato.json" with { type: "json" }
+import cobalt2 from "./theme/cobalt2.json" with { type: "json" }
+import cursor from "./theme/cursor.json" with { type: "json" }
+import dracula from "./theme/dracula.json" with { type: "json" }
+import everforest from "./theme/everforest.json" with { type: "json" }
+import flexoki from "./theme/flexoki.json" with { type: "json" }
+import github from "./theme/github.json" with { type: "json" }
+import gruvbox from "./theme/gruvbox.json" with { type: "json" }
+import kanagawa from "./theme/kanagawa.json" with { type: "json" }
+import material from "./theme/material.json" with { type: "json" }
+import matrix from "./theme/matrix.json" with { type: "json" }
+import mercury from "./theme/mercury.json" with { type: "json" }
+import monokai from "./theme/monokai.json" with { type: "json" }
+import nightowl from "./theme/nightowl.json" with { type: "json" }
+import nord from "./theme/nord.json" with { type: "json" }
+import osakaJade from "./theme/osaka-jade.json" with { type: "json" }
+import onedark from "./theme/one-dark.json" with { type: "json" }
+import opencode from "./theme/opencode.json" with { type: "json" }
+import orng from "./theme/orng.json" with { type: "json" }
+import lucentOrng from "./theme/lucent-orng.json" with { type: "json" }
+import palenight from "./theme/palenight.json" with { type: "json" }
+import rosepine from "./theme/rosepine.json" with { type: "json" }
+import solarized from "./theme/solarized.json" with { type: "json" }
+import synthwave84 from "./theme/synthwave84.json" with { type: "json" }
+import tokyonight from "./theme/tokyonight.json" with { type: "json" }
+import vercel from "./theme/vercel.json" with { type: "json" }
+import vesper from "./theme/vesper.json" with { type: "json" }
+import zenburn from "./theme/zenburn.json" with { type: "json" }
+import carbonfox from "./theme/carbonfox.json" with { type: "json" }
 import { useKV } from "./kv"
+import { useRenderer } from "@opentui/solid"
+import { createStore, produce } from "solid-js/store"
+import { Global } from "@/global"
+import { Filesystem } from "@/util/filesystem"
+import { useTuiConfig } from "./tui-config"
+import { isRecord } from "@/util/record"
+import type { TuiThemeCurrent } from "@opencode-ai/plugin/tui"
 
-type Theme = {
-  primary: RGBA
-  secondary: RGBA
-  accent: RGBA
-  error: RGBA
-  warning: RGBA
-  success: RGBA
-  info: RGBA
-  text: RGBA
-  textMuted: RGBA
-  background: RGBA
-  backgroundPanel: RGBA
-  backgroundElement: RGBA
-  border: RGBA
-  borderActive: RGBA
-  borderSubtle: RGBA
-  diffAdded: RGBA
-  diffRemoved: RGBA
-  diffContext: RGBA
-  diffHunkHeader: RGBA
-  diffHighlightAdded: RGBA
-  diffHighlightRemoved: RGBA
-  diffAddedBg: RGBA
-  diffRemovedBg: RGBA
-  diffContextBg: RGBA
-  diffLineNumber: RGBA
-  diffAddedLineNumberBg: RGBA
-  diffRemovedLineNumberBg: RGBA
-  markdownText: RGBA
-  markdownHeading: RGBA
-  markdownLink: RGBA
-  markdownLinkText: RGBA
-  markdownCode: RGBA
-  markdownBlockQuote: RGBA
-  markdownEmph: RGBA
-  markdownStrong: RGBA
-  markdownHorizontalRule: RGBA
-  markdownListItem: RGBA
-  markdownListEnumeration: RGBA
-  markdownImage: RGBA
-  markdownImageText: RGBA
-  markdownCodeBlock: RGBA
+type Theme = TuiThemeCurrent & {
+  _hasSelectedListItemText: boolean
+}
+type ThemeColor = Exclude<keyof TuiThemeCurrent, "thinkingOpacity">
+
+export function selectedForeground(theme: Theme, bg?: RGBA): RGBA {
+  // If theme explicitly defines selectedListItemText, use it
+  if (theme._hasSelectedListItemText) {
+    return theme.selectedListItemText
+  }
+
+  // For transparent backgrounds, calculate contrast based on the actual bg (or fallback to primary)
+  if (theme.background.a === 0) {
+    const targetColor = bg ?? theme.primary
+    const { r, g, b } = targetColor
+    const luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    return luminance > 0.5 ? RGBA.fromInts(0, 0, 0) : RGBA.fromInts(255, 255, 255)
+  }
+
+  // Fall back to background color
+  return theme.background
 }
 
 type HexColor = `#${string}`
 type RefName = string
-type ColorModeObj = {
+type Variant = {
   dark: HexColor | RefName
   light: HexColor | RefName
 }
-type ColorValue = HexColor | RefName | ColorModeObj
-type ThemeJson = {
+type ColorValue = HexColor | RefName | Variant | RGBA
+export type ThemeJson = {
   $schema?: string
   defs?: Record<string, HexColor | RefName>
-  theme: Record<keyof Theme, ColorValue>
-}
-
-export const THEMES: Record<string, Theme> = {
-  aura: resolveTheme(aura),
-  ayu: resolveTheme(ayu),
-  catppuccin: resolveTheme(catppuccin),
-  cobalt2: resolveTheme(cobalt2),
-  dracula: resolveTheme(dracula),
-  everforest: resolveTheme(everforest),
-  github: resolveTheme(github),
-  gruvbox: resolveTheme(gruvbox),
-  kanagawa: resolveTheme(kanagawa),
-  material: resolveTheme(material),
-  matrix: resolveTheme(matrix),
-  monokai: resolveTheme(monokai),
-  nord: resolveTheme(nord),
-  ["one-dark"]: resolveTheme(onedark),
-  opencode: resolveTheme(opencode),
-  palenight: resolveTheme(palenight),
-  rosepine: resolveTheme(rosepine),
-  solarized: resolveTheme(solarized),
-  synthwave84: resolveTheme(synthwave84),
-  tokyonight: resolveTheme(tokyonight),
-  vesper: resolveTheme(vesper),
-  zenburn: resolveTheme(zenburn),
-}
-
-function resolveTheme(theme: ThemeJson) {
-  const defs = theme.defs ?? {}
-  function resolveColor(c: ColorValue): RGBA {
-    if (typeof c === "string") return c.startsWith("#") ? RGBA.fromHex(c) : resolveColor(defs[c])
-    // TODO: support light theme when opentui has the equivalent of lipgloss.AdaptiveColor
-    return resolveColor(c.dark)
+  theme: Omit<Record<ThemeColor, ColorValue>, "selectedListItemText" | "backgroundMenu"> & {
+    selectedListItemText?: ColorValue
+    backgroundMenu?: ColorValue
+    thinkingOpacity?: number
   }
-  return Object.fromEntries(
-    Object.entries(theme.theme).map(([key, value]) => {
-      return [key, resolveColor(value)]
-    }),
-  ) as Theme
 }
 
-const syntaxThemeDark = [
-  {
-    scope: ["prompt"],
-    style: {
-      foreground: "#7dcfff",
-    },
-  },
-  {
-    scope: ["extmark.file"],
-    style: {
-      foreground: "#ff9e64",
-      bold: true,
-    },
-  },
-  {
-    scope: ["extmark.agent"],
-    style: {
-      foreground: "#bb9af7",
-      bold: true,
-    },
-  },
-  {
-    scope: ["extmark.paste"],
-    style: {
-      foreground: "#1a1b26",
-      background: "#ff9e64",
-      bold: true,
-    },
-  },
-  {
-    scope: ["comment"],
-    style: {
-      foreground: "#565f89",
-      italic: true,
-    },
-  },
-  {
-    scope: ["comment.documentation"],
-    style: {
-      foreground: "#565f89",
-      italic: true,
-    },
-  },
-  {
-    scope: ["string", "symbol"],
-    style: {
-      foreground: "#9ece6a",
-    },
-  },
-  {
-    scope: ["number", "boolean"],
-    style: {
-      foreground: "#ff9e64",
-    },
-  },
-  {
-    scope: ["character.special"],
-    style: {
-      foreground: "#9ece6a",
-    },
-  },
-  {
-    scope: ["keyword.return", "keyword.conditional", "keyword.repeat", "keyword.coroutine"],
-    style: {
-      foreground: "#bb9af7",
-      italic: true,
-    },
-  },
-  {
-    scope: ["keyword.type"],
-    style: {
-      foreground: "#2ac3de",
-      bold: true,
-      italic: true,
-    },
-  },
-  {
-    scope: ["keyword.function", "function.method"],
-    style: {
-      foreground: "#bb9af7",
-    },
-  },
-  {
-    scope: ["keyword"],
-    style: {
-      foreground: "#bb9af7",
-      italic: true,
-    },
-  },
-  {
-    scope: ["keyword.import"],
-    style: {
-      foreground: "#bb9af7",
-    },
-  },
-  {
-    scope: ["operator", "keyword.operator", "punctuation.delimiter"],
-    style: {
-      foreground: "#89ddff",
-    },
-  },
-  {
-    scope: ["keyword.conditional.ternary"],
-    style: {
-      foreground: "#89ddff",
-    },
-  },
-  {
-    scope: ["variable", "variable.parameter", "function.method.call", "function.call"],
-    style: {
-      foreground: "#7dcfff",
-    },
-  },
-  {
-    scope: ["variable.member", "function", "constructor"],
-    style: {
-      foreground: "#7aa2f7",
-    },
-  },
-  {
-    scope: ["type", "module"],
-    style: {
-      foreground: "#2ac3de",
-    },
-  },
-  {
-    scope: ["constant"],
-    style: {
-      foreground: "#ff9e64",
-    },
-  },
-  {
-    scope: ["property"],
-    style: {
-      foreground: "#73daca",
-    },
-  },
-  {
-    scope: ["class"],
-    style: {
-      foreground: "#2ac3de",
-    },
-  },
-  {
-    scope: ["parameter"],
-    style: {
-      foreground: "#e0af68",
-    },
-  },
-  {
-    scope: ["punctuation", "punctuation.bracket"],
-    style: {
-      foreground: "#89ddff",
-    },
-  },
-  {
-    scope: [
-      "variable.builtin",
-      "type.builtin",
-      "function.builtin",
-      "module.builtin",
-      "constant.builtin",
-    ],
-    style: {
-      foreground: "#f7768e",
-    },
-  },
-  {
-    scope: ["variable.super"],
-    style: {
-      foreground: "#f7768e",
-    },
-  },
-  {
-    scope: ["string.escape", "string.regexp"],
-    style: {
-      foreground: "#bb9af7",
-    },
-  },
-  {
-    scope: ["keyword.directive"],
-    style: {
-      foreground: "#bb9af7",
-      italic: true,
-    },
-  },
-  {
-    scope: ["punctuation.special"],
-    style: {
-      foreground: "#89ddff",
-    },
-  },
-  {
-    scope: ["keyword.modifier"],
-    style: {
-      foreground: "#bb9af7",
-      italic: true,
-    },
-  },
-  {
-    scope: ["keyword.exception"],
-    style: {
-      foreground: "#bb9af7",
-      italic: true,
-    },
-  },
-  // Markdown specific styles
-  {
-    scope: ["markup.heading"],
-    style: {
-      foreground: "#7aa2f7",
-      bold: true,
-    },
-  },
-  {
-    scope: ["markup.heading.1"],
-    style: {
-      foreground: "#bb9af7",
-      bold: true,
-    },
-  },
-  {
-    scope: ["markup.heading.2"],
-    style: {
-      foreground: "#7aa2f7",
-      bold: true,
-    },
-  },
-  {
-    scope: ["markup.heading.3"],
-    style: {
-      foreground: "#7dcfff",
-      bold: true,
-    },
-  },
-  {
-    scope: ["markup.heading.4"],
-    style: {
-      foreground: "#73daca",
-      bold: true,
-    },
-  },
-  {
-    scope: ["markup.heading.5"],
-    style: {
-      foreground: "#9ece6a",
-      bold: true,
-    },
-  },
-  {
-    scope: ["markup.heading.6"],
-    style: {
-      foreground: "#565f89",
-      bold: true,
-    },
-  },
-  {
-    scope: ["markup.bold", "markup.strong"],
-    style: {
-      foreground: "#e6edf3",
-      bold: true,
-    },
-  },
-  {
-    scope: ["markup.italic"],
-    style: {
-      foreground: "#e6edf3",
-      italic: true,
-    },
-  },
-  {
-    scope: ["markup.list"],
-    style: {
-      foreground: "#ff9e64",
-    },
-  },
-  {
-    scope: ["markup.quote"],
-    style: {
-      foreground: "#565f89",
-      italic: true,
-    },
-  },
-  {
-    scope: ["markup.raw", "markup.raw.block"],
-    style: {
-      foreground: "#9ece6a",
-    },
-  },
-  {
-    scope: ["markup.raw.inline"],
-    style: {
-      foreground: "#9ece6a",
-      background: "#1a1b26",
-    },
-  },
-  {
-    scope: ["markup.link"],
-    style: {
-      foreground: "#7aa2f7",
-      underline: true,
-    },
-  },
-  {
-    scope: ["markup.link.label"],
-    style: {
-      foreground: "#7dcfff",
-      underline: true,
-    },
-  },
-  {
-    scope: ["markup.link.url"],
-    style: {
-      foreground: "#7aa2f7",
-      underline: true,
-    },
-  },
-  {
-    scope: ["label"],
-    style: {
-      foreground: "#73daca",
-    },
-  },
-  {
-    scope: ["spell", "nospell"],
-    style: {
-      foreground: "#e6edf3",
-    },
-  },
-  {
-    scope: ["conceal"],
-    style: {
-      foreground: "#565f89",
-    },
-  },
-  // Additional common highlight groups
-  {
-    scope: ["string.special", "string.special.url"],
-    style: {
-      foreground: "#73daca",
-      underline: true,
-    },
-  },
-  {
-    scope: ["character"],
-    style: {
-      foreground: "#9ece6a",
-    },
-  },
-  {
-    scope: ["float"],
-    style: {
-      foreground: "#ff9e64",
-    },
-  },
-  {
-    scope: ["comment.error"],
-    style: {
-      foreground: "#f7768e",
-      italic: true,
-      bold: true,
-    },
-  },
-  {
-    scope: ["comment.warning"],
-    style: {
-      foreground: "#e0af68",
-      italic: true,
-      bold: true,
-    },
-  },
-  {
-    scope: ["comment.todo", "comment.note"],
-    style: {
-      foreground: "#7aa2f7",
-      italic: true,
-      bold: true,
-    },
-  },
-  {
-    scope: ["namespace"],
-    style: {
-      foreground: "#2ac3de",
-    },
-  },
-  {
-    scope: ["field"],
-    style: {
-      foreground: "#73daca",
-    },
-  },
-  {
-    scope: ["type.definition"],
-    style: {
-      foreground: "#2ac3de",
-      bold: true,
-    },
-  },
-  {
-    scope: ["keyword.export"],
-    style: {
-      foreground: "#bb9af7",
-    },
-  },
-  {
-    scope: ["attribute", "annotation"],
-    style: {
-      foreground: "#e0af68",
-    },
-  },
-  {
-    scope: ["tag"],
-    style: {
-      foreground: "#f7768e",
-    },
-  },
-  {
-    scope: ["tag.attribute"],
-    style: {
-      foreground: "#bb9af7",
-    },
-  },
-  {
-    scope: ["tag.delimiter"],
-    style: {
-      foreground: "#89ddff",
-    },
-  },
-  {
-    scope: ["markup.strikethrough"],
-    style: {
-      foreground: "#565f89",
-    },
-  },
-  {
-    scope: ["markup.underline"],
-    style: {
-      foreground: "#e6edf3",
-      underline: true,
-    },
-  },
-  {
-    scope: ["markup.list.checked"],
-    style: {
-      foreground: "#9ece6a",
-    },
-  },
-  {
-    scope: ["markup.list.unchecked"],
-    style: {
-      foreground: "#565f89",
-    },
-  },
-  {
-    scope: ["diff.plus"],
-    style: {
-      foreground: "#9ece6a",
-    },
-  },
-  {
-    scope: ["diff.minus"],
-    style: {
-      foreground: "#f7768e",
-    },
-  },
-  {
-    scope: ["diff.delta"],
-    style: {
-      foreground: "#7dcfff",
-    },
-  },
-  {
-    scope: ["error"],
-    style: {
-      foreground: "#f7768e",
-      bold: true,
-    },
-  },
-  {
-    scope: ["warning"],
-    style: {
-      foreground: "#e0af68",
-      bold: true,
-    },
-  },
-  {
-    scope: ["info"],
-    style: {
-      foreground: "#7dcfff",
-    },
-  },
-  {
-    scope: ["debug"],
-    style: {
-      foreground: "#565f89",
-    },
-  },
-]
+export const DEFAULT_THEMES: Record<string, ThemeJson> = {
+  aura,
+  ayu,
+  catppuccin,
+  ["catppuccin-frappe"]: catppuccinFrappe,
+  ["catppuccin-macchiato"]: catppuccinMacchiato,
+  cobalt2,
+  cursor,
+  dracula,
+  everforest,
+  flexoki,
+  github,
+  gruvbox,
+  kanagawa,
+  material,
+  matrix,
+  mercury,
+  monokai,
+  nightowl,
+  nord,
+  ["one-dark"]: onedark,
+  ["osaka-jade"]: osakaJade,
+  opencode,
+  orng,
+  ["lucent-orng"]: lucentOrng,
+  palenight,
+  rosepine,
+  solarized,
+  synthwave84,
+  tokyonight,
+  vesper,
+  vercel,
+  zenburn,
+  carbonfox,
+}
 
-export const SyntaxTheme = SyntaxStyle.fromTheme(syntaxThemeDark)
+type State = {
+  themes: Record<string, ThemeJson>
+  mode: "dark" | "light"
+  lock: "dark" | "light" | undefined
+  active: string
+  ready: boolean
+}
+
+const pluginThemes: Record<string, ThemeJson> = {}
+let customThemes: Record<string, ThemeJson> = {}
+let systemTheme: ThemeJson | undefined
+
+function listThemes() {
+  // Priority: defaults < plugin installs < custom files < generated system.
+  const themes = {
+    ...DEFAULT_THEMES,
+    ...pluginThemes,
+    ...customThemes,
+  }
+  if (!systemTheme) return themes
+  return {
+    ...themes,
+    system: systemTheme,
+  }
+}
+
+function syncThemes() {
+  setStore("themes", listThemes())
+}
+
+const [store, setStore] = createStore<State>({
+  themes: listThemes(),
+  mode: "dark",
+  lock: undefined,
+  active: "opencode",
+  ready: false,
+})
+
+export function allThemes() {
+  return store.themes
+}
+
+function isTheme(theme: unknown): theme is ThemeJson {
+  if (!isRecord(theme)) return false
+  if (!isRecord(theme.theme)) return false
+  return true
+}
+
+export function hasTheme(name: string) {
+  if (!name) return false
+  return allThemes()[name] !== undefined
+}
+
+export function addTheme(name: string, theme: unknown) {
+  if (!name) return false
+  if (!isTheme(theme)) return false
+  if (hasTheme(name)) return false
+  pluginThemes[name] = theme
+  syncThemes()
+  return true
+}
+
+export function upsertTheme(name: string, theme: unknown) {
+  if (!name) return false
+  if (!isTheme(theme)) return false
+  if (customThemes[name] !== undefined) {
+    customThemes[name] = theme
+  } else {
+    pluginThemes[name] = theme
+  }
+  syncThemes()
+  return true
+}
+
+export function resolveTheme(theme: ThemeJson, mode: "dark" | "light") {
+  const defs = theme.defs ?? {}
+  function resolveColor(c: ColorValue, chain: string[] = []): RGBA {
+    if (c instanceof RGBA) return c
+    if (typeof c === "string") {
+      if (c === "transparent" || c === "none") return RGBA.fromInts(0, 0, 0, 0)
+
+      if (c.startsWith("#")) return RGBA.fromHex(c)
+
+      if (chain.includes(c)) {
+        throw new Error(`Circular color reference: ${[...chain, c].join(" -> ")}`)
+      }
+
+      const next = defs[c] ?? theme.theme[c as ThemeColor]
+      if (next === undefined) {
+        throw new Error(`Color reference "${c}" not found in defs or theme`)
+      }
+      return resolveColor(next, [...chain, c])
+    }
+    if (typeof c === "number") {
+      return ansiToRgba(c)
+    }
+    return resolveColor(c[mode], chain)
+  }
+
+  const resolved = Object.fromEntries(
+    Object.entries(theme.theme)
+      .filter(([key]) => key !== "selectedListItemText" && key !== "backgroundMenu" && key !== "thinkingOpacity")
+      .map(([key, value]) => {
+        return [key, resolveColor(value as ColorValue)]
+      }),
+  ) as Partial<Record<ThemeColor, RGBA>>
+
+  // Handle selectedListItemText separately since it's optional
+  const hasSelectedListItemText = theme.theme.selectedListItemText !== undefined
+  if (hasSelectedListItemText) {
+    resolved.selectedListItemText = resolveColor(theme.theme.selectedListItemText!)
+  } else {
+    // Backward compatibility: if selectedListItemText is not defined, use background color
+    // This preserves the current behavior for all existing themes
+    resolved.selectedListItemText = resolved.background
+  }
+
+  // Handle backgroundMenu - optional with fallback to backgroundElement
+  if (theme.theme.backgroundMenu !== undefined) {
+    resolved.backgroundMenu = resolveColor(theme.theme.backgroundMenu)
+  } else {
+    resolved.backgroundMenu = resolved.backgroundElement
+  }
+
+  // Handle thinkingOpacity - optional with default of 0.6
+  const thinkingOpacity = theme.theme.thinkingOpacity ?? 0.6
+
+  return {
+    ...resolved,
+    _hasSelectedListItemText: hasSelectedListItemText,
+    thinkingOpacity,
+  } as Theme
+}
+
+function ansiToRgba(code: number): RGBA {
+  // Standard ANSI colors (0-15)
+  if (code < 16) {
+    const ansiColors = [
+      "#000000", // Black
+      "#800000", // Red
+      "#008000", // Green
+      "#808000", // Yellow
+      "#000080", // Blue
+      "#800080", // Magenta
+      "#008080", // Cyan
+      "#c0c0c0", // White
+      "#808080", // Bright Black
+      "#ff0000", // Bright Red
+      "#00ff00", // Bright Green
+      "#ffff00", // Bright Yellow
+      "#0000ff", // Bright Blue
+      "#ff00ff", // Bright Magenta
+      "#00ffff", // Bright Cyan
+      "#ffffff", // Bright White
+    ]
+    return RGBA.fromHex(ansiColors[code] ?? "#000000")
+  }
+
+  // 6x6x6 Color Cube (16-231)
+  if (code < 232) {
+    const index = code - 16
+    const b = index % 6
+    const g = Math.floor(index / 6) % 6
+    const r = Math.floor(index / 36)
+
+    const val = (x: number) => (x === 0 ? 0 : x * 40 + 55)
+    return RGBA.fromInts(val(r), val(g), val(b))
+  }
+
+  // Grayscale Ramp (232-255)
+  if (code < 256) {
+    const gray = (code - 232) * 10 + 8
+    return RGBA.fromInts(gray, gray, gray)
+  }
+
+  // Fallback for invalid codes
+  return RGBA.fromInts(0, 0, 0)
+}
 
 export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
   name: "Theme",
-  init: () => {
-    const sync = useSync()
+  init: (props: { mode: "dark" | "light" }) => {
+    const renderer = useRenderer()
+    const config = useTuiConfig()
     const kv = useKV()
+    const pick = (value: unknown) => {
+      if (value === "dark" || value === "light") return value
+      return
+    }
 
-    const [theme, setTheme] = createSignal(sync.data.config.theme ?? kv.data.theme)
+    setStore(
+      produce((draft) => {
+        const lock = pick(kv.get("theme_mode_lock"))
+        const mode = pick(kv.get("theme_mode", props.mode))
+        draft.mode = lock ?? mode ?? props.mode
+        draft.lock = lock
+        const active = config.theme ?? kv.get("theme", "opencode")
+        draft.active = typeof active === "string" ? active : "opencode"
+        draft.ready = false
+      }),
+    )
+
+    createEffect(() => {
+      const theme = config.theme
+      if (theme) setStore("active", theme)
+    })
+
+    function init() {
+      Promise.allSettled([
+        resolveSystemTheme(store.mode),
+        getCustomThemes()
+          .then((custom) => {
+            customThemes = custom
+            syncThemes()
+          })
+          .catch(() => {
+            setStore("active", "opencode")
+          }),
+      ]).finally(() => {
+        setStore("ready", true)
+      })
+    }
+
+    onMount(init)
+
+    function resolveSystemTheme(mode: "dark" | "light" = store.mode) {
+      return renderer
+        .getPalette({
+          size: 16,
+        })
+        .then((colors: TerminalColors) => {
+          if (!colors.palette[0]) {
+            systemTheme = undefined
+            syncThemes()
+            if (store.active === "system") {
+              setStore("active", "opencode")
+            }
+            return
+          }
+          systemTheme = generateSystem(colors, mode)
+          syncThemes()
+        })
+        .catch(() => {
+          systemTheme = undefined
+          syncThemes()
+          if (store.active === "system") {
+            setStore("active", "opencode")
+          }
+        })
+    }
+
+    function apply(mode: "dark" | "light") {
+      kv.set("theme_mode", mode)
+      if (store.mode === mode) return
+      setStore("mode", mode)
+      renderer.clearPaletteCache()
+      resolveSystemTheme(mode)
+    }
+
+    function pin(mode: "dark" | "light" = store.mode) {
+      setStore("lock", mode)
+      kv.set("theme_mode_lock", mode)
+      apply(mode)
+    }
+
+    function free() {
+      setStore("lock", undefined)
+      kv.set("theme_mode_lock", undefined)
+      const mode = renderer.themeMode
+      if (mode) apply(mode)
+    }
+
+    const handle = (mode: "dark" | "light") => {
+      if (store.lock) return
+      apply(mode)
+    }
+    renderer.on(CliRenderEvents.THEME_MODE, handle)
+
+    const refresh = () => {
+      renderer.clearPaletteCache()
+      init()
+    }
+    process.on("SIGUSR2", refresh)
+
+    onCleanup(() => {
+      renderer.off(CliRenderEvents.THEME_MODE, handle)
+      process.off("SIGUSR2", refresh)
+    })
 
     const values = createMemo(() => {
-      return THEMES[theme()] ?? THEMES.opencode
+      const active = store.themes[store.active]
+      if (active) return resolveTheme(active, store.mode)
+
+      const saved = kv.get("theme")
+      if (typeof saved === "string") {
+        const theme = store.themes[saved]
+        if (theme) return resolveTheme(theme, store.mode)
+      }
+
+      return resolveTheme(store.themes.opencode, store.mode)
     })
+
+    createEffect(() => {
+      renderer.setBackgroundColor(values().background)
+    })
+
+    const syntax = createMemo(() => generateSyntax(values()))
+    const subtleSyntax = createMemo(() => generateSubtleSyntax(values()))
 
     return {
       theme: new Proxy(values(), {
@@ -643,16 +438,801 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
         },
       }),
       get selected() {
-        return kv.data.theme
+        return store.active
+      },
+      all() {
+        return allThemes()
+      },
+      has(name: string) {
+        return hasTheme(name)
+      },
+      syntax,
+      subtleSyntax,
+      mode() {
+        return store.mode
+      },
+      locked() {
+        return store.lock !== undefined
+      },
+      lock() {
+        pin(store.mode)
+      },
+      unlock() {
+        free()
+      },
+      setMode(mode: "dark" | "light") {
+        pin(mode)
       },
       set(theme: string) {
-        if (!THEMES[theme]) return
-        setTheme(theme)
+        if (!hasTheme(theme)) return false
+        setStore("active", theme)
         kv.set("theme", theme)
+        return true
       },
       get ready() {
-        return sync.ready
+        return store.ready
       },
     }
   },
 })
+
+async function getCustomThemes() {
+  const directories = [
+    Global.Path.config,
+    ...(await Array.fromAsync(
+      Filesystem.up({
+        targets: [".opencode"],
+        start: process.cwd(),
+      }),
+    )),
+  ]
+
+  const result: Record<string, ThemeJson> = {}
+  for (const dir of directories) {
+    for (const item of await Glob.scan("themes/*.json", {
+      cwd: dir,
+      absolute: true,
+      dot: true,
+      symlink: true,
+    })) {
+      const name = path.basename(item, ".json")
+      result[name] = await Filesystem.readJson(item)
+    }
+  }
+  return result
+}
+
+export function tint(base: RGBA, overlay: RGBA, alpha: number): RGBA {
+  const r = base.r + (overlay.r - base.r) * alpha
+  const g = base.g + (overlay.g - base.g) * alpha
+  const b = base.b + (overlay.b - base.b) * alpha
+  return RGBA.fromInts(Math.round(r * 255), Math.round(g * 255), Math.round(b * 255))
+}
+
+function generateSystem(colors: TerminalColors, mode: "dark" | "light"): ThemeJson {
+  const bg = RGBA.fromHex(colors.defaultBackground ?? colors.palette[0]!)
+  const fg = RGBA.fromHex(colors.defaultForeground ?? colors.palette[7]!)
+  const transparent = RGBA.fromValues(bg.r, bg.g, bg.b, 0)
+  const isDark = mode == "dark"
+
+  const col = (i: number) => {
+    const value = colors.palette[i]
+    if (value) return RGBA.fromHex(value)
+    return ansiToRgba(i)
+  }
+
+  // Generate gray scale based on terminal background
+  const grays = generateGrayScale(bg, isDark)
+  const textMuted = generateMutedTextColor(bg, isDark)
+
+  // ANSI color references
+  const ansiColors = {
+    black: col(0),
+    red: col(1),
+    green: col(2),
+    yellow: col(3),
+    blue: col(4),
+    magenta: col(5),
+    cyan: col(6),
+    white: col(7),
+    redBright: col(9),
+    greenBright: col(10),
+  }
+
+  const diffAlpha = isDark ? 0.22 : 0.14
+  const diffAddedBg = tint(bg, ansiColors.green, diffAlpha)
+  const diffRemovedBg = tint(bg, ansiColors.red, diffAlpha)
+  const diffContextBg = grays[2]
+  const diffAddedLineNumberBg = tint(diffContextBg, ansiColors.green, diffAlpha)
+  const diffRemovedLineNumberBg = tint(diffContextBg, ansiColors.red, diffAlpha)
+  const diffLineNumber = textMuted
+
+  return {
+    theme: {
+      // Primary colors using ANSI
+      primary: ansiColors.cyan,
+      secondary: ansiColors.magenta,
+      accent: ansiColors.cyan,
+
+      // Status colors using ANSI
+      error: ansiColors.red,
+      warning: ansiColors.yellow,
+      success: ansiColors.green,
+      info: ansiColors.cyan,
+
+      // Text colors
+      text: fg,
+      textMuted,
+      selectedListItemText: bg,
+
+      // Background colors - use transparent to respect terminal transparency
+      background: transparent,
+      backgroundPanel: grays[2],
+      backgroundElement: grays[3],
+      backgroundMenu: grays[3],
+
+      // Border colors
+      borderSubtle: grays[6],
+      border: grays[7],
+      borderActive: grays[8],
+
+      // Diff colors
+      diffAdded: ansiColors.green,
+      diffRemoved: ansiColors.red,
+      diffContext: grays[7],
+      diffHunkHeader: grays[7],
+      diffHighlightAdded: ansiColors.greenBright,
+      diffHighlightRemoved: ansiColors.redBright,
+      diffAddedBg,
+      diffRemovedBg,
+      diffContextBg,
+      diffLineNumber,
+      diffAddedLineNumberBg,
+      diffRemovedLineNumberBg,
+
+      // Markdown colors
+      markdownText: fg,
+      markdownHeading: fg,
+      markdownLink: ansiColors.blue,
+      markdownLinkText: ansiColors.cyan,
+      markdownCode: ansiColors.green,
+      markdownBlockQuote: ansiColors.yellow,
+      markdownEmph: ansiColors.yellow,
+      markdownStrong: fg,
+      markdownHorizontalRule: grays[7],
+      markdownListItem: ansiColors.blue,
+      markdownListEnumeration: ansiColors.cyan,
+      markdownImage: ansiColors.blue,
+      markdownImageText: ansiColors.cyan,
+      markdownCodeBlock: fg,
+
+      // Syntax colors
+      syntaxComment: textMuted,
+      syntaxKeyword: ansiColors.magenta,
+      syntaxFunction: ansiColors.blue,
+      syntaxVariable: fg,
+      syntaxString: ansiColors.green,
+      syntaxNumber: ansiColors.yellow,
+      syntaxType: ansiColors.cyan,
+      syntaxOperator: ansiColors.cyan,
+      syntaxPunctuation: fg,
+    },
+  }
+}
+
+function generateGrayScale(bg: RGBA, isDark: boolean): Record<number, RGBA> {
+  const grays: Record<number, RGBA> = {}
+
+  // RGBA stores floats in range 0-1, convert to 0-255
+  const bgR = bg.r * 255
+  const bgG = bg.g * 255
+  const bgB = bg.b * 255
+
+  const luminance = 0.299 * bgR + 0.587 * bgG + 0.114 * bgB
+
+  for (let i = 1; i <= 12; i++) {
+    const factor = i / 12.0
+
+    let grayValue: number
+    let newR: number
+    let newG: number
+    let newB: number
+
+    if (isDark) {
+      if (luminance < 10) {
+        grayValue = Math.floor(factor * 0.4 * 255)
+        newR = grayValue
+        newG = grayValue
+        newB = grayValue
+      } else {
+        const newLum = luminance + (255 - luminance) * factor * 0.4
+
+        const ratio = newLum / luminance
+        newR = Math.min(bgR * ratio, 255)
+        newG = Math.min(bgG * ratio, 255)
+        newB = Math.min(bgB * ratio, 255)
+      }
+    } else {
+      if (luminance > 245) {
+        grayValue = Math.floor(255 - factor * 0.4 * 255)
+        newR = grayValue
+        newG = grayValue
+        newB = grayValue
+      } else {
+        const newLum = luminance * (1 - factor * 0.4)
+
+        const ratio = newLum / luminance
+        newR = Math.max(bgR * ratio, 0)
+        newG = Math.max(bgG * ratio, 0)
+        newB = Math.max(bgB * ratio, 0)
+      }
+    }
+
+    grays[i] = RGBA.fromInts(Math.floor(newR), Math.floor(newG), Math.floor(newB))
+  }
+
+  return grays
+}
+
+function generateMutedTextColor(bg: RGBA, isDark: boolean): RGBA {
+  // RGBA stores floats in range 0-1, convert to 0-255
+  const bgR = bg.r * 255
+  const bgG = bg.g * 255
+  const bgB = bg.b * 255
+
+  const bgLum = 0.299 * bgR + 0.587 * bgG + 0.114 * bgB
+
+  let grayValue: number
+
+  if (isDark) {
+    if (bgLum < 10) {
+      // Very dark/black background
+      grayValue = 180 // #b4b4b4
+    } else {
+      // Scale up for lighter dark backgrounds
+      grayValue = Math.min(Math.floor(160 + bgLum * 0.3), 200)
+    }
+  } else {
+    if (bgLum > 245) {
+      // Very light/white background
+      grayValue = 75 // #4b4b4b
+    } else {
+      // Scale down for darker light backgrounds
+      grayValue = Math.max(Math.floor(100 - (255 - bgLum) * 0.2), 60)
+    }
+  }
+
+  return RGBA.fromInts(grayValue, grayValue, grayValue)
+}
+
+function generateSyntax(theme: Theme) {
+  return SyntaxStyle.fromTheme(getSyntaxRules(theme))
+}
+
+function generateSubtleSyntax(theme: Theme) {
+  const rules = getSyntaxRules(theme)
+  return SyntaxStyle.fromTheme(
+    rules.map((rule) => {
+      if (rule.style.foreground) {
+        const fg = rule.style.foreground
+        return {
+          ...rule,
+          style: {
+            ...rule.style,
+            foreground: RGBA.fromInts(
+              Math.round(fg.r * 255),
+              Math.round(fg.g * 255),
+              Math.round(fg.b * 255),
+              Math.round(theme.thinkingOpacity * 255),
+            ),
+          },
+        }
+      }
+      return rule
+    }),
+  )
+}
+
+function getSyntaxRules(theme: Theme) {
+  return [
+    {
+      scope: ["default"],
+      style: {
+        foreground: theme.text,
+      },
+    },
+    {
+      scope: ["prompt"],
+      style: {
+        foreground: theme.accent,
+      },
+    },
+    {
+      scope: ["extmark.file"],
+      style: {
+        foreground: theme.warning,
+        bold: true,
+      },
+    },
+    {
+      scope: ["extmark.agent"],
+      style: {
+        foreground: theme.secondary,
+        bold: true,
+      },
+    },
+    {
+      scope: ["extmark.paste"],
+      style: {
+        foreground: theme.background,
+        background: theme.warning,
+        bold: true,
+      },
+    },
+    {
+      scope: ["comment"],
+      style: {
+        foreground: theme.syntaxComment,
+        italic: true,
+      },
+    },
+    {
+      scope: ["comment.documentation"],
+      style: {
+        foreground: theme.syntaxComment,
+        italic: true,
+      },
+    },
+    {
+      scope: ["string", "symbol"],
+      style: {
+        foreground: theme.syntaxString,
+      },
+    },
+    {
+      scope: ["number", "boolean"],
+      style: {
+        foreground: theme.syntaxNumber,
+      },
+    },
+    {
+      scope: ["character.special"],
+      style: {
+        foreground: theme.syntaxString,
+      },
+    },
+    {
+      scope: ["keyword.return", "keyword.conditional", "keyword.repeat", "keyword.coroutine"],
+      style: {
+        foreground: theme.syntaxKeyword,
+        italic: true,
+      },
+    },
+    {
+      scope: ["keyword.type"],
+      style: {
+        foreground: theme.syntaxType,
+        bold: true,
+        italic: true,
+      },
+    },
+    {
+      scope: ["keyword.function", "function.method"],
+      style: {
+        foreground: theme.syntaxFunction,
+      },
+    },
+    {
+      scope: ["keyword"],
+      style: {
+        foreground: theme.syntaxKeyword,
+        italic: true,
+      },
+    },
+    {
+      scope: ["keyword.import"],
+      style: {
+        foreground: theme.syntaxKeyword,
+      },
+    },
+    {
+      scope: ["operator", "keyword.operator", "punctuation.delimiter"],
+      style: {
+        foreground: theme.syntaxOperator,
+      },
+    },
+    {
+      scope: ["keyword.conditional.ternary"],
+      style: {
+        foreground: theme.syntaxOperator,
+      },
+    },
+    {
+      scope: ["variable", "variable.parameter", "function.method.call", "function.call"],
+      style: {
+        foreground: theme.syntaxVariable,
+      },
+    },
+    {
+      scope: ["variable.member", "function", "constructor"],
+      style: {
+        foreground: theme.syntaxFunction,
+      },
+    },
+    {
+      scope: ["type", "module"],
+      style: {
+        foreground: theme.syntaxType,
+      },
+    },
+    {
+      scope: ["constant"],
+      style: {
+        foreground: theme.syntaxNumber,
+      },
+    },
+    {
+      scope: ["property"],
+      style: {
+        foreground: theme.syntaxVariable,
+      },
+    },
+    {
+      scope: ["class"],
+      style: {
+        foreground: theme.syntaxType,
+      },
+    },
+    {
+      scope: ["parameter"],
+      style: {
+        foreground: theme.syntaxVariable,
+      },
+    },
+    {
+      scope: ["punctuation", "punctuation.bracket"],
+      style: {
+        foreground: theme.syntaxPunctuation,
+      },
+    },
+    {
+      scope: ["variable.builtin", "type.builtin", "function.builtin", "module.builtin", "constant.builtin"],
+      style: {
+        foreground: theme.error,
+      },
+    },
+    {
+      scope: ["variable.super"],
+      style: {
+        foreground: theme.error,
+      },
+    },
+    {
+      scope: ["string.escape", "string.regexp"],
+      style: {
+        foreground: theme.syntaxKeyword,
+      },
+    },
+    {
+      scope: ["keyword.directive"],
+      style: {
+        foreground: theme.syntaxKeyword,
+        italic: true,
+      },
+    },
+    {
+      scope: ["punctuation.special"],
+      style: {
+        foreground: theme.syntaxOperator,
+      },
+    },
+    {
+      scope: ["keyword.modifier"],
+      style: {
+        foreground: theme.syntaxKeyword,
+        italic: true,
+      },
+    },
+    {
+      scope: ["keyword.exception"],
+      style: {
+        foreground: theme.syntaxKeyword,
+        italic: true,
+      },
+    },
+    // Markdown specific styles
+    {
+      scope: ["markup.heading"],
+      style: {
+        foreground: theme.markdownHeading,
+        bold: true,
+      },
+    },
+    {
+      scope: ["markup.heading.1"],
+      style: {
+        foreground: theme.markdownHeading,
+        bold: true,
+      },
+    },
+    {
+      scope: ["markup.heading.2"],
+      style: {
+        foreground: theme.markdownHeading,
+        bold: true,
+      },
+    },
+    {
+      scope: ["markup.heading.3"],
+      style: {
+        foreground: theme.markdownHeading,
+        bold: true,
+      },
+    },
+    {
+      scope: ["markup.heading.4"],
+      style: {
+        foreground: theme.markdownHeading,
+        bold: true,
+      },
+    },
+    {
+      scope: ["markup.heading.5"],
+      style: {
+        foreground: theme.markdownHeading,
+        bold: true,
+      },
+    },
+    {
+      scope: ["markup.heading.6"],
+      style: {
+        foreground: theme.markdownHeading,
+        bold: true,
+      },
+    },
+    {
+      scope: ["markup.bold", "markup.strong"],
+      style: {
+        foreground: theme.markdownStrong,
+        bold: true,
+      },
+    },
+    {
+      scope: ["markup.italic"],
+      style: {
+        foreground: theme.markdownEmph,
+        italic: true,
+      },
+    },
+    {
+      scope: ["markup.list"],
+      style: {
+        foreground: theme.markdownListItem,
+      },
+    },
+    {
+      scope: ["markup.quote"],
+      style: {
+        foreground: theme.markdownBlockQuote,
+        italic: true,
+      },
+    },
+    {
+      scope: ["markup.raw", "markup.raw.block"],
+      style: {
+        foreground: theme.markdownCode,
+      },
+    },
+    {
+      scope: ["markup.raw.inline"],
+      style: {
+        foreground: theme.markdownCode,
+        background: theme.background,
+      },
+    },
+    {
+      scope: ["markup.link"],
+      style: {
+        foreground: theme.markdownLink,
+        underline: true,
+      },
+    },
+    {
+      scope: ["markup.link.label"],
+      style: {
+        foreground: theme.markdownLinkText,
+        underline: true,
+      },
+    },
+    {
+      scope: ["markup.link.url"],
+      style: {
+        foreground: theme.markdownLink,
+        underline: true,
+      },
+    },
+    {
+      scope: ["label"],
+      style: {
+        foreground: theme.markdownLinkText,
+      },
+    },
+    {
+      scope: ["spell", "nospell"],
+      style: {
+        foreground: theme.text,
+      },
+    },
+    {
+      scope: ["conceal"],
+      style: {
+        foreground: theme.textMuted,
+      },
+    },
+    // Additional common highlight groups
+    {
+      scope: ["string.special", "string.special.url"],
+      style: {
+        foreground: theme.markdownLink,
+        underline: true,
+      },
+    },
+    {
+      scope: ["character"],
+      style: {
+        foreground: theme.syntaxString,
+      },
+    },
+    {
+      scope: ["float"],
+      style: {
+        foreground: theme.syntaxNumber,
+      },
+    },
+    {
+      scope: ["comment.error"],
+      style: {
+        foreground: theme.error,
+        italic: true,
+        bold: true,
+      },
+    },
+    {
+      scope: ["comment.warning"],
+      style: {
+        foreground: theme.warning,
+        italic: true,
+        bold: true,
+      },
+    },
+    {
+      scope: ["comment.todo", "comment.note"],
+      style: {
+        foreground: theme.info,
+        italic: true,
+        bold: true,
+      },
+    },
+    {
+      scope: ["namespace"],
+      style: {
+        foreground: theme.syntaxType,
+      },
+    },
+    {
+      scope: ["field"],
+      style: {
+        foreground: theme.syntaxVariable,
+      },
+    },
+    {
+      scope: ["type.definition"],
+      style: {
+        foreground: theme.syntaxType,
+        bold: true,
+      },
+    },
+    {
+      scope: ["keyword.export"],
+      style: {
+        foreground: theme.syntaxKeyword,
+      },
+    },
+    {
+      scope: ["attribute", "annotation"],
+      style: {
+        foreground: theme.warning,
+      },
+    },
+    {
+      scope: ["tag"],
+      style: {
+        foreground: theme.error,
+      },
+    },
+    {
+      scope: ["tag.attribute"],
+      style: {
+        foreground: theme.syntaxKeyword,
+      },
+    },
+    {
+      scope: ["tag.delimiter"],
+      style: {
+        foreground: theme.syntaxOperator,
+      },
+    },
+    {
+      scope: ["markup.strikethrough"],
+      style: {
+        foreground: theme.textMuted,
+      },
+    },
+    {
+      scope: ["markup.underline"],
+      style: {
+        foreground: theme.text,
+        underline: true,
+      },
+    },
+    {
+      scope: ["markup.list.checked"],
+      style: {
+        foreground: theme.success,
+      },
+    },
+    {
+      scope: ["markup.list.unchecked"],
+      style: {
+        foreground: theme.textMuted,
+      },
+    },
+    {
+      scope: ["diff.plus"],
+      style: {
+        foreground: theme.diffAdded,
+        background: theme.diffAddedBg,
+      },
+    },
+    {
+      scope: ["diff.minus"],
+      style: {
+        foreground: theme.diffRemoved,
+        background: theme.diffRemovedBg,
+      },
+    },
+    {
+      scope: ["diff.delta"],
+      style: {
+        foreground: theme.diffContext,
+        background: theme.diffContextBg,
+      },
+    },
+    {
+      scope: ["error"],
+      style: {
+        foreground: theme.error,
+        bold: true,
+      },
+    },
+    {
+      scope: ["warning"],
+      style: {
+        foreground: theme.warning,
+        bold: true,
+      },
+    },
+    {
+      scope: ["info"],
+      style: {
+        foreground: theme.info,
+      },
+    },
+    {
+      scope: ["debug"],
+      style: {
+        foreground: theme.textMuted,
+      },
+    },
+  ]
+}

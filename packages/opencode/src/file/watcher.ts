@@ -1,19 +1,30 @@
-import z from "zod"
-import { Bus } from "../bus"
-import { Flag } from "../flag/flag"
-import { Instance } from "../project/instance"
-import { Log } from "../util/log"
-import { FileIgnore } from "./ignore"
-import { Config } from "../config/config"
+import { Cause, Effect, Layer, Scope, Context } from "effect"
 // @ts-ignore
 import { createWrapper } from "@parcel/watcher/wrapper"
+import type ParcelWatcher from "@parcel/watcher"
+import { readdir } from "fs/promises"
+import path from "path"
+import z from "zod"
+import { Bus } from "@/bus"
+import { BusEvent } from "@/bus/bus-event"
+import { InstanceState } from "@/effect/instance-state"
+import { Flag } from "@/flag/flag"
+import { Git } from "@/git"
+import { Instance } from "@/project/instance"
 import { lazy } from "@/util/lazy"
+import { Config } from "../config/config"
+import { FileIgnore } from "./ignore"
+import { Protected } from "./protected"
+import { Log } from "../util/log"
+
+declare const OPENCODE_LIBC: string | undefined
 
 export namespace FileWatcher {
   const log = Log.create({ service: "file.watcher" })
+  const SUBSCRIBE_TIMEOUT_MS = 10_000
 
   export const Event = {
-    Updated: Bus.event(
+    Updated: BusEvent.define(
       "file.watcher.updated",
       z.object({
         file: z.string(),
@@ -22,54 +33,131 @@ export namespace FileWatcher {
     ),
   }
 
-  const watcher = lazy(() => {
-    const binding = require(
-      `@parcel/watcher-${process.platform}-${process.arch}${process.platform === "linux" ? "-glibc" : ""}`,
-    )
-    return createWrapper(binding) as typeof import("@parcel/watcher")
+  const watcher = lazy((): typeof import("@parcel/watcher") | undefined => {
+    try {
+      const binding = require(
+        `@parcel/watcher-${process.platform}-${process.arch}${process.platform === "linux" ? `-${OPENCODE_LIBC || "glibc"}` : ""}`,
+      )
+      return createWrapper(binding) as typeof import("@parcel/watcher")
+    } catch (error) {
+      log.error("failed to load watcher binding", { error })
+      return
+    }
   })
 
-  const state = Instance.state(
-    async () => {
-      if (Instance.project.vcs !== "git") return {}
-      log.info("init")
-      const cfg = await Config.get()
-      const backend = (() => {
-        if (process.platform === "win32") return "windows"
-        if (process.platform === "darwin") return "fs-events"
-        if (process.platform === "linux") return "inotify"
-      })()
-      if (!backend) {
-        log.error("watcher backend not supported", { platform: process.platform })
-        return {}
-      }
-      log.info("watcher backend", { platform: process.platform, backend })
-      const sub = await watcher().subscribe(
-        Instance.directory,
-        (err, evts) => {
-          if (err) return
-          for (const evt of evts) {
-            log.info("event", evt)
-            if (evt.type === "create") Bus.publish(Event.Updated, { file: evt.path, event: "add" })
-            if (evt.type === "update") Bus.publish(Event.Updated, { file: evt.path, event: "change" })
-            if (evt.type === "delete") Bus.publish(Event.Updated, { file: evt.path, event: "unlink" })
-          }
-        },
-        {
-          ignore: [...FileIgnore.PATTERNS, ...(cfg.watcher?.ignore ?? [])],
-          backend,
-        },
+  function getBackend() {
+    if (process.platform === "win32") return "windows"
+    if (process.platform === "darwin") return "fs-events"
+    if (process.platform === "linux") return "inotify"
+  }
+
+  function protecteds(dir: string) {
+    return Protected.paths().filter((item) => {
+      const rel = path.relative(dir, item)
+      return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)
+    })
+  }
+
+  export const hasNativeBinding = () => !!watcher()
+
+  export interface Interface {
+    readonly init: () => Effect.Effect<void>
+  }
+
+  export class Service extends Context.Service<Service, Interface>()("@opencode/FileWatcher") {}
+
+  export const layer = Layer.effect(
+    Service,
+    Effect.gen(function* () {
+      const config = yield* Config.Service
+      const git = yield* Git.Service
+
+      const state = yield* InstanceState.make(
+        Effect.fn("FileWatcher.state")(
+          function* () {
+            if (yield* Flag.OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER) return
+
+            log.info("init", { directory: Instance.directory })
+
+            const backend = getBackend()
+            if (!backend) {
+              log.error("watcher backend not supported", { directory: Instance.directory, platform: process.platform })
+              return
+            }
+
+            const w = watcher()
+            if (!w) return
+
+            log.info("watcher backend", { directory: Instance.directory, platform: process.platform, backend })
+
+            const subs: ParcelWatcher.AsyncSubscription[] = []
+            yield* Effect.addFinalizer(() =>
+              Effect.promise(() => Promise.allSettled(subs.map((sub) => sub.unsubscribe()))),
+            )
+
+            const cb: ParcelWatcher.SubscribeCallback = Instance.bind((err, evts) => {
+              if (err) return
+              for (const evt of evts) {
+                if (evt.type === "create") Bus.publish(Event.Updated, { file: evt.path, event: "add" })
+                if (evt.type === "update") Bus.publish(Event.Updated, { file: evt.path, event: "change" })
+                if (evt.type === "delete") Bus.publish(Event.Updated, { file: evt.path, event: "unlink" })
+              }
+            })
+
+            const subscribe = (dir: string, ignore: string[]) => {
+              const pending = w.subscribe(dir, cb, { ignore, backend })
+              return Effect.gen(function* () {
+                const sub = yield* Effect.promise(() => pending)
+                subs.push(sub)
+              }).pipe(
+                Effect.timeout(SUBSCRIBE_TIMEOUT_MS),
+                Effect.catchCause((cause) => {
+                  log.error("failed to subscribe", { dir, cause: Cause.pretty(cause) })
+                  pending.then((s) => s.unsubscribe()).catch(() => {})
+                  return Effect.void
+                }),
+              )
+            }
+
+            const cfg = yield* config.get()
+            const cfgIgnores = cfg.watcher?.ignore ?? []
+
+            if (yield* Flag.OPENCODE_EXPERIMENTAL_FILEWATCHER) {
+              yield* subscribe(Instance.directory, [
+                ...FileIgnore.PATTERNS,
+                ...cfgIgnores,
+                ...protecteds(Instance.directory),
+              ])
+            }
+
+            if (Instance.project.vcs === "git") {
+              const result = yield* git.run(["rev-parse", "--git-dir"], {
+                cwd: Instance.project.worktree,
+              })
+              const vcsDir =
+                result.exitCode === 0 ? path.resolve(Instance.project.worktree, result.text().trim()) : undefined
+              if (vcsDir && !cfgIgnores.includes(".git") && !cfgIgnores.includes(vcsDir)) {
+                const ignore = (yield* Effect.promise(() => readdir(vcsDir).catch(() => []))).filter(
+                  (entry) => entry !== "HEAD",
+                )
+                yield* subscribe(vcsDir, ignore)
+              }
+            }
+          },
+          Effect.catchCause((cause) => {
+            log.error("failed to init watcher service", { cause: Cause.pretty(cause) })
+            return Effect.void
+          }),
+        ),
       )
-      return { sub }
-    },
-    async (state) => {
-      if (!state.sub) return
-      await state.sub?.unsubscribe()
-    },
+
+      return Service.of({
+        init: Effect.fn("FileWatcher.init")(function* () {
+          yield* InstanceState.get(state)
+        }),
+      })
+    }),
   )
 
-  export function init() {
-    if (!Flag.OPENCODE_EXPERIMENTAL_WATCHER) return
-    state()
-  }
+  export const defaultLayer = layer.pipe(Layer.provide(Config.defaultLayer), Layer.provide(Git.defaultLayer))
 }

@@ -10,19 +10,6 @@
   /*   background-color: var(--color-primary); */
   /*   color: var(--color-background); */
   /* } */
-
-  ::-webkit-scrollbar-track {
-    background: var(--theme-background-panel);
-  }
-
-  ::-webkit-scrollbar-thumb {
-    background-color: var(--theme-border-subtle);
-    border-radius: 6px;
-  }
-
-  * {
-    scrollbar-color: var(--theme-border-subtle) var(--theme-background-panel);
-  }
 }
 
 .no-scrollbar {
@@ -76,6 +63,7 @@
 
 .text-12-mono {
   font-family: var(--font-family-mono);
+  font-feature-settings: var(--font-feature-settings-mono);
   font-size: var(--font-size-small);
   font-style: normal;
   font-weight: var(--font-weight-regular);
@@ -103,6 +91,7 @@
 
 .text-14-mono {
   font-family: var(--font-family-mono);
+  font-feature-settings: var(--font-feature-settings-mono);
   font-size: var(--font-size-base);
   font-style: normal;
   font-weight: var(--font-weight-regular);

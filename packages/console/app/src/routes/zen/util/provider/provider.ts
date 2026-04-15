@@ -1,5 +1,4 @@
-import { Format } from "../format"
-
+import { ZenData } from "@opencode-ai/console-core/model.js"
 import {
   fromAnthropicChunk,
   fromAnthropicRequest,
@@ -25,23 +24,33 @@ import {
   toOaCompatibleResponse,
 } from "./openai-compatible"
 
-export type ProviderHelper = {
-  format: Format
-  modifyUrl: (providerApi: string) => string
+export type UsageInfo = {
+  inputTokens: number
+  outputTokens: number
+  reasoningTokens?: number
+  cacheReadTokens?: number
+  cacheWrite5mTokens?: number
+  cacheWrite1hTokens?: number
+}
+
+export type ProviderHelper = (input: {
+  reqModel: string
+  providerModel: string
+  adjustCacheUsage?: boolean
+  safetyIdentifier?: string
+  workspaceID?: string
+}) => {
+  format: ZenData.Format
+  modifyUrl: (providerApi: string, isStream?: boolean) => string
   modifyHeaders: (headers: Headers, body: Record<string, any>, apiKey: string) => void
   modifyBody: (body: Record<string, any>) => Record<string, any>
+  createBinaryStreamDecoder: () => ((chunk: Uint8Array) => Uint8Array | undefined) | undefined
+  streamSeparator: string
   createUsageParser: () => {
     parse: (chunk: string) => void
     retrieve: () => any
   }
-  normalizeUsage: (usage: any) => {
-    inputTokens: number
-    outputTokens: number
-    reasoningTokens?: number
-    cacheReadTokens?: number
-    cacheWrite5mTokens?: number
-    cacheWrite1hTokens?: number
-  }
+  normalizeUsage: (usage: any) => UsageInfo
 }
 
 export interface CommonMessage {
@@ -158,7 +167,20 @@ export interface CommonChunk {
   }
 }
 
-export function createBodyConverter(from: Format, to: Format) {
+export function buildCostChunk(format: ZenData.Format, cost: string): string {
+  switch (format) {
+    case "anthropic":
+      return `event: ping\ndata: ${JSON.stringify({ type: "ping", cost })}\n\n`
+    case "openai":
+      return `event: ping\ndata: ${JSON.stringify({ type: "ping", cost })}\n\n`
+    case "oa-compat":
+      return `data: ${JSON.stringify({ choices: [], cost })}\n\n`
+    default:
+      return `data: ${JSON.stringify({ type: "ping", cost })}\n\n`
+  }
+}
+
+export function createBodyConverter(from: ZenData.Format, to: ZenData.Format) {
   return (body: any): any => {
     if (from === to) return body
 
@@ -173,7 +195,7 @@ export function createBodyConverter(from: Format, to: Format) {
   }
 }
 
-export function createStreamPartConverter(from: Format, to: Format) {
+export function createStreamPartConverter(from: ZenData.Format, to: ZenData.Format) {
   return (part: any): any => {
     if (from === to) return part
 
@@ -191,7 +213,7 @@ export function createStreamPartConverter(from: Format, to: Format) {
   }
 }
 
-export function createResponseConverter(from: Format, to: Format) {
+export function createResponseConverter(from: ZenData.Format, to: ZenData.Format) {
   return (response: any): any => {
     if (from === to) return response
 

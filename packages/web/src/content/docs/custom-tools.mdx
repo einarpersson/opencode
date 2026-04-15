@@ -9,7 +9,7 @@ Custom tools are functions you create that the LLM can call during conversations
 
 ## Creating a tool
 
-Tools are defined as **TypeScript** or **JavaScript** files.
+Tools are defined as **TypeScript** or **JavaScript** files. However, the tool definition can invoke scripts written in **any language** — TypeScript or JavaScript is only used for the tool definition itself.
 
 ---
 
@@ -17,8 +17,8 @@ Tools are defined as **TypeScript** or **JavaScript** files.
 
 They can be defined:
 
-- Locally by placing them in the `.opencode/tool/` directory of your project.
-- Or globally, by placing them in `~/.config/opencode/tool/`.
+- Locally by placing them in the `.opencode/tools/` directory of your project.
+- Or globally, by placing them in `~/.config/opencode/tools/`.
 
 ---
 
@@ -26,7 +26,7 @@ They can be defined:
 
 The easiest way to create tools is using the `tool()` helper which provides type-safety and validation.
 
-```ts title=".opencode/tool/database.ts" {1}
+```ts title=".opencode/tools/database.ts" {1}
 import { tool } from "@opencode-ai/plugin"
 
 export default tool({
@@ -42,6 +42,66 @@ export default tool({
 ```
 
 The **filename** becomes the **tool name**. The above creates a `database` tool.
+
+---
+
+#### Multiple tools per file
+
+You can also export multiple tools from a single file. Each export becomes **a separate tool** with the name **`<filename>_<exportname>`**:
+
+```ts title=".opencode/tools/math.ts"
+import { tool } from "@opencode-ai/plugin"
+
+export const add = tool({
+  description: "Add two numbers",
+  args: {
+    a: tool.schema.number().describe("First number"),
+    b: tool.schema.number().describe("Second number"),
+  },
+  async execute(args) {
+    return args.a + args.b
+  },
+})
+
+export const multiply = tool({
+  description: "Multiply two numbers",
+  args: {
+    a: tool.schema.number().describe("First number"),
+    b: tool.schema.number().describe("Second number"),
+  },
+  async execute(args) {
+    return args.a * args.b
+  },
+})
+```
+
+This creates two tools: `math_add` and `math_multiply`.
+
+---
+
+#### Name collisions with built-in tools
+
+Custom tools are keyed by tool name. If a custom tool uses the same name as a built-in tool, the custom tool takes precedence.
+
+For example, this file replaces the built-in `bash` tool:
+
+```ts title=".opencode/tools/bash.ts"
+import { tool } from "@opencode-ai/plugin"
+
+export default tool({
+  description: "Restricted bash wrapper",
+  args: {
+    command: tool.schema.string(),
+  },
+  async execute(args) {
+    return `blocked: ${args.command}`
+  },
+})
+```
+
+:::note
+Prefer unique names unless you intentionally want to replace a built-in tool. If you want to disable a built in tool but not override it, use [permissions](/docs/permissions).
+:::
 
 ---
 
@@ -74,11 +134,11 @@ export default {
 
 ---
 
-## Context
+### Context
 
 Tools receive context about the current session:
 
-```ts title=".opencode/tool/project.ts" {8}
+```ts title=".opencode/tools/project.ts" {8}
 import { tool } from "@opencode-ai/plugin"
 
 export default tool({
@@ -86,42 +146,51 @@ export default tool({
   args: {},
   async execute(args, context) {
     // Access context information
-    const { agent, sessionID, messageID } = context
-    return `Agent: ${agent}, Session: ${sessionID}, Message: ${messageID}`
+    const { agent, sessionID, messageID, directory, worktree } = context
+    return `Agent: ${agent}, Session: ${sessionID}, Message: ${messageID}, Directory: ${directory}, Worktree: ${worktree}`
   },
 })
 ```
+
+Use `context.directory` for the session working directory.
+Use `context.worktree` for the git worktree root.
 
 ---
 
-## Multiple tools per file
+## Examples
 
-You can also export multiple tools from a single file. Each export becomes **a separate tool** with the name **`<filename>_<exportname>`**:
+### Write a tool in Python
 
-```ts title=".opencode/tool/math.ts"
+You can write your tools in any language you want. Here's an example that adds two numbers using Python.
+
+First, create the tool as a Python script:
+
+```python title=".opencode/tools/add.py"
+import sys
+
+a = int(sys.argv[1])
+b = int(sys.argv[2])
+print(a + b)
+```
+
+Then create the tool definition that invokes it:
+
+```ts title=".opencode/tools/python-add.ts" {10}
 import { tool } from "@opencode-ai/plugin"
+import path from "path"
 
-export const add = tool({
-  description: "Add two numbers",
+export default tool({
+  description: "Add two numbers using Python",
   args: {
     a: tool.schema.number().describe("First number"),
     b: tool.schema.number().describe("Second number"),
   },
-  async execute(args) {
-    return args.a + args.b
-  },
-})
-
-export const multiply = tool({
-  description: "Multiply two numbers",
-  args: {
-    a: tool.schema.number().describe("First number"),
-    b: tool.schema.number().describe("Second number"),
-  },
-  async execute(args) {
-    return args.a * args.b
+  async execute(args, context) {
+    const script = path.join(context.worktree, ".opencode/tools/add.py")
+    const result = await Bun.$`python3 ${script} ${args.a} ${args.b}`.text()
+    return result.trim()
   },
 })
 ```
 
-This creates two tools: `math_add` and `math_multiply`.
+Here we are using the [`Bun.$`](https://bun.com/docs/runtime/shell) utility to run the Python script.

@@ -17,7 +17,7 @@ export async function OPTIONS(input: APIEvent) {
 }
 
 export async function GET(input: APIEvent) {
-  const zenData = ZenData.list()
+  const zenData = ZenData.list("full")
   const disabledModels = await authenticate()
 
   return new Response(
@@ -25,6 +25,7 @@ export async function GET(input: APIEvent) {
       object: "list",
       data: Object.entries(zenData.models)
         .filter(([id]) => !disabledModels.includes(id))
+        .filter(([id]) => !id.startsWith("alpha-"))
         .map(([id, _model]) => ({
           id,
           object: "model",
@@ -50,10 +51,7 @@ export async function GET(input: APIEvent) {
         })
         .from(KeyTable)
         .innerJoin(WorkspaceTable, eq(WorkspaceTable.id, KeyTable.workspaceID))
-        .leftJoin(
-          ModelTable,
-          and(eq(ModelTable.workspaceID, KeyTable.workspaceID), isNull(ModelTable.timeDeleted)),
-        )
+        .leftJoin(ModelTable, and(eq(ModelTable.workspaceID, KeyTable.workspaceID), isNull(ModelTable.timeDeleted)))
         .where(and(eq(KeyTable.key, apiKey), isNull(KeyTable.timeDeleted)))
         .then((rows) => rows.map((row) => row.model)),
     )

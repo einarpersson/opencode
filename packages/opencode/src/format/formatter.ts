@@ -1,36 +1,39 @@
-import { BunProc } from "../bun"
+import { Npm } from "../npm"
 import { Instance } from "../project/instance"
 import { Filesystem } from "../util/filesystem"
+import { Process } from "../util/process"
+import { which } from "../util/which"
+import { Flag } from "@/flag/flag"
 
 export interface Info {
   name: string
-  command: string[]
   environment?: Record<string, string>
   extensions: string[]
-  enabled(): Promise<boolean>
+  enabled(): Promise<string[] | false>
 }
 
 export const gofmt: Info = {
   name: "gofmt",
-  command: ["gofmt", "-w", "$FILE"],
   extensions: [".go"],
   async enabled() {
-    return Bun.which("gofmt") !== null
+    const match = which("gofmt")
+    if (!match) return false
+    return [match, "-w", "$FILE"]
   },
 }
 
 export const mix: Info = {
   name: "mix",
-  command: ["mix", "format", "$FILE"],
   extensions: [".ex", ".exs", ".eex", ".heex", ".leex", ".neex", ".sface"],
   async enabled() {
-    return Bun.which("mix") !== null
+    const match = which("mix")
+    if (!match) return false
+    return [match, "format", "$FILE"]
   },
 }
 
 export const prettier: Info = {
   name: "prettier",
-  command: [BunProc.which(), "x", "prettier", "--write", "$FILE"],
   environment: {
     BUN_BE_BUN: "1",
   },
@@ -65,9 +68,37 @@ export const prettier: Info = {
   async enabled() {
     const items = await Filesystem.findUp("package.json", Instance.directory, Instance.worktree)
     for (const item of items) {
-      const json = await Bun.file(item).json()
-      if (json.dependencies?.prettier) return true
-      if (json.devDependencies?.prettier) return true
+      const json = await Filesystem.readJson<{
+        dependencies?: Record<string, string>
+        devDependencies?: Record<string, string>
+      }>(item)
+      if (json.dependencies?.prettier || json.devDependencies?.prettier) {
+        const bin = await Npm.which("prettier")
+        if (bin) return [bin, "--write", "$FILE"]
+      }
+    }
+    return false
+  },
+}
+
+export const oxfmt: Info = {
+  name: "oxfmt",
+  environment: {
+    BUN_BE_BUN: "1",
+  },
+  extensions: [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"],
+  async enabled() {
+    if (!Flag.OPENCODE_EXPERIMENTAL_OXFMT) return false
+    const items = await Filesystem.findUp("package.json", Instance.directory, Instance.worktree)
+    for (const item of items) {
+      const json = await Filesystem.readJson<{
+        dependencies?: Record<string, string>
+        devDependencies?: Record<string, string>
+      }>(item)
+      if (json.dependencies?.oxfmt || json.devDependencies?.oxfmt) {
+        const bin = await Npm.which("oxfmt")
+        if (bin) return [bin, "$FILE"]
+      }
     }
     return false
   },
@@ -75,7 +106,6 @@ export const prettier: Info = {
 
 export const biome: Info = {
   name: "biome",
-  command: [BunProc.which(), "x", "@biomejs/biome", "format", "--write", "$FILE"],
   environment: {
     BUN_BE_BUN: "1",
   },
@@ -112,7 +142,8 @@ export const biome: Info = {
     for (const config of configs) {
       const found = await Filesystem.findUp(config, Instance.directory, Instance.worktree)
       if (found.length > 0) {
-        return true
+        const bin = await Npm.which("@biomejs/biome")
+        if (bin) return [bin, "format", "--write", "$FILE"]
       }
     }
     return false
@@ -121,47 +152,51 @@ export const biome: Info = {
 
 export const zig: Info = {
   name: "zig",
-  command: ["zig", "fmt", "$FILE"],
   extensions: [".zig", ".zon"],
   async enabled() {
-    return Bun.which("zig") !== null
+    const match = which("zig")
+    if (!match) return false
+    return [match, "fmt", "$FILE"]
   },
 }
 
 export const clang: Info = {
   name: "clang-format",
-  command: ["clang-format", "-i", "$FILE"],
   extensions: [".c", ".cc", ".cpp", ".cxx", ".c++", ".h", ".hh", ".hpp", ".hxx", ".h++", ".ino", ".C", ".H"],
   async enabled() {
     const items = await Filesystem.findUp(".clang-format", Instance.directory, Instance.worktree)
-    return items.length > 0
+    if (items.length > 0) {
+      const match = which("clang-format")
+      if (match) return [match, "-i", "$FILE"]
+    }
+    return false
   },
 }
 
 export const ktlint: Info = {
   name: "ktlint",
-  command: ["ktlint", "-F", "$FILE"],
   extensions: [".kt", ".kts"],
   async enabled() {
-    return Bun.which("ktlint") !== null
+    const match = which("ktlint")
+    if (!match) return false
+    return [match, "-F", "$FILE"]
   },
 }
 
 export const ruff: Info = {
   name: "ruff",
-  command: ["ruff", "format", "$FILE"],
   extensions: [".py", ".pyi"],
   async enabled() {
-    if (!Bun.which("ruff")) return false
+    if (!which("ruff")) return false
     const configs = ["pyproject.toml", "ruff.toml", ".ruff.toml"]
     for (const config of configs) {
       const found = await Filesystem.findUp(config, Instance.directory, Instance.worktree)
       if (found.length > 0) {
         if (config === "pyproject.toml") {
-          const content = await Bun.file(found[0]).text()
-          if (content.includes("[tool.ruff]")) return true
+          const content = await Filesystem.readText(found[0])
+          if (content.includes("[tool.ruff]")) return ["ruff", "format", "$FILE"]
         } else {
-          return true
+          return ["ruff", "format", "$FILE"]
         }
       }
     }
@@ -169,37 +204,198 @@ export const ruff: Info = {
     for (const dep of deps) {
       const found = await Filesystem.findUp(dep, Instance.directory, Instance.worktree)
       if (found.length > 0) {
-        const content = await Bun.file(found[0]).text()
-        if (content.includes("ruff")) return true
+        const content = await Filesystem.readText(found[0])
+        if (content.includes("ruff")) return ["ruff", "format", "$FILE"]
       }
     }
     return false
   },
 }
 
+export const rlang: Info = {
+  name: "air",
+  extensions: [".R"],
+  async enabled() {
+    const air = which("air")
+    if (air == null) return false
+
+    const output = await Process.text([air, "--help"], { nothrow: true })
+
+    // Check for "Air: An R language server and formatter"
+    const firstLine = output.text.split("\n")[0]
+    const hasR = firstLine.includes("R language")
+    const hasFormatter = firstLine.includes("formatter")
+    if (output.code === 0 && hasR && hasFormatter) return [air, "format", "$FILE"]
+    return false
+  },
+}
+
+export const uvformat: Info = {
+  name: "uv",
+  extensions: [".py", ".pyi"],
+  async enabled() {
+    if (await ruff.enabled()) return false
+    const uv = which("uv")
+    if (uv == null) return false
+    const output = await Process.run([uv, "format", "--help"], { nothrow: true })
+    if (output.code === 0) return [uv, "format", "--", "$FILE"]
+    return false
+  },
+}
+
 export const rubocop: Info = {
   name: "rubocop",
-  command: ["rubocop", "--autocorrect", "$FILE"],
   extensions: [".rb", ".rake", ".gemspec", ".ru"],
   async enabled() {
-    return Bun.which("rubocop") !== null
+    const match = which("rubocop")
+    if (!match) return false
+    return [match, "--autocorrect", "$FILE"]
   },
 }
 
 export const standardrb: Info = {
   name: "standardrb",
-  command: ["standardrb", "--fix", "$FILE"],
   extensions: [".rb", ".rake", ".gemspec", ".ru"],
   async enabled() {
-    return Bun.which("standardrb") !== null
+    const match = which("standardrb")
+    if (!match) return false
+    return [match, "--fix", "$FILE"]
   },
 }
 
 export const htmlbeautifier: Info = {
   name: "htmlbeautifier",
-  command: ["htmlbeautifier", "$FILE"],
   extensions: [".erb", ".html.erb"],
   async enabled() {
-    return Bun.which("htmlbeautifier") !== null
+    const match = which("htmlbeautifier")
+    if (!match) return false
+    return [match, "$FILE"]
+  },
+}
+
+export const dart: Info = {
+  name: "dart",
+  extensions: [".dart"],
+  async enabled() {
+    const match = which("dart")
+    if (!match) return false
+    return [match, "format", "$FILE"]
+  },
+}
+
+export const ocamlformat: Info = {
+  name: "ocamlformat",
+  extensions: [".ml", ".mli"],
+  async enabled() {
+    if (!which("ocamlformat")) return false
+    const items = await Filesystem.findUp(".ocamlformat", Instance.directory, Instance.worktree)
+    if (items.length > 0) return ["ocamlformat", "-i", "$FILE"]
+    return false
+  },
+}
+
+export const terraform: Info = {
+  name: "terraform",
+  extensions: [".tf", ".tfvars"],
+  async enabled() {
+    const match = which("terraform")
+    if (!match) return false
+    return [match, "fmt", "$FILE"]
+  },
+}
+
+export const latexindent: Info = {
+  name: "latexindent",
+  extensions: [".tex"],
+  async enabled() {
+    const match = which("latexindent")
+    if (!match) return false
+    return [match, "-w", "-s", "$FILE"]
+  },
+}
+
+export const gleam: Info = {
+  name: "gleam",
+  extensions: [".gleam"],
+  async enabled() {
+    const match = which("gleam")
+    if (!match) return false
+    return [match, "format", "$FILE"]
+  },
+}
+
+export const shfmt: Info = {
+  name: "shfmt",
+  extensions: [".sh", ".bash"],
+  async enabled() {
+    const match = which("shfmt")
+    if (!match) return false
+    return [match, "-w", "$FILE"]
+  },
+}
+
+export const nixfmt: Info = {
+  name: "nixfmt",
+  extensions: [".nix"],
+  async enabled() {
+    const match = which("nixfmt")
+    if (!match) return false
+    return [match, "$FILE"]
+  },
+}
+
+export const rustfmt: Info = {
+  name: "rustfmt",
+  extensions: [".rs"],
+  async enabled() {
+    const match = which("rustfmt")
+    if (!match) return false
+    return [match, "$FILE"]
+  },
+}
+
+export const pint: Info = {
+  name: "pint",
+  extensions: [".php"],
+  async enabled() {
+    const items = await Filesystem.findUp("composer.json", Instance.directory, Instance.worktree)
+    for (const item of items) {
+      const json = await Filesystem.readJson<{
+        require?: Record<string, string>
+        "require-dev"?: Record<string, string>
+      }>(item)
+      if (json.require?.["laravel/pint"] || json["require-dev"]?.["laravel/pint"]) return ["./vendor/bin/pint", "$FILE"]
+    }
+    return false
+  },
+}
+
+export const ormolu: Info = {
+  name: "ormolu",
+  extensions: [".hs"],
+  async enabled() {
+    const match = which("ormolu")
+    if (!match) return false
+    return [match, "-i", "$FILE"]
+  },
+}
+
+export const cljfmt: Info = {
+  name: "cljfmt",
+  extensions: [".clj", ".cljs", ".cljc", ".edn"],
+  async enabled() {
+    const match = which("cljfmt")
+    if (!match) return false
+    return [match, "fix", "--quiet", "$FILE"]
+  },
+}
+
+export const dfmt: Info = {
+  name: "dfmt",
+  extensions: [".d"],
+  async enabled() {
+    const match = which("dfmt")
+    if (!match) return false
+    return [match, "-i", "$FILE"]
   },
 }

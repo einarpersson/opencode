@@ -1,25 +1,21 @@
-import { json, query, action, useParams, createAsync, useSubmission } from "@solidjs/router"
+import { json, action, useParams, createAsync, useSubmission } from "@solidjs/router"
 import { createEffect, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { withActor } from "~/context/auth.withActor"
 import { Billing } from "@opencode-ai/console-core/billing.js"
 import styles from "./monthly-limit-section.module.css"
-
-const getBillingInfo = query(async (workspaceID: string) => {
-  "use server"
-  return withActor(async () => {
-    return await Billing.get()
-  }, workspaceID)
-}, "billing.get")
+import { queryBillingInfo } from "../../common"
+import { useI18n } from "~/context/i18n"
+import { formError, localizeError } from "~/lib/form-error"
 
 const setMonthlyLimit = action(async (form: FormData) => {
   "use server"
   const limit = form.get("limit")?.toString()
-  if (!limit) return { error: "Limit is required." }
+  if (!limit) return { error: formError.limitRequired }
   const numericLimit = parseInt(limit)
-  if (numericLimit < 0) return { error: "Set a valid monthly limit." }
+  if (numericLimit < 0) return { error: formError.monthlyLimitInvalid }
   const workspaceID = form.get("workspaceID")?.toString()
-  if (!workspaceID) return { error: "Workspace ID is required." }
+  if (!workspaceID) return { error: formError.workspaceRequired }
   return json(
     await withActor(
       () =>
@@ -28,15 +24,16 @@ const setMonthlyLimit = action(async (form: FormData) => {
           .catch((e) => ({ error: e.message as string })),
       workspaceID,
     ),
-    { revalidate: getBillingInfo.key },
+    { revalidate: queryBillingInfo.key },
   )
 }, "billing.setMonthlyLimit")
 
 export function MonthlyLimitSection() {
   const params = useParams()
+  const i18n = useI18n()
   const submission = useSubmission(setMonthlyLimit)
   const [store, setStore] = createStore({ show: false })
-  const balanceInfo = createAsync(() => getBillingInfo(params.id))
+  const billingInfo = createAsync(() => queryBillingInfo(params.id!))
 
   let input: HTMLInputElement
 
@@ -67,14 +64,14 @@ export function MonthlyLimitSection() {
   return (
     <section class={styles.root}>
       <div data-slot="section-title">
-        <h2>Monthly Limit</h2>
-        <p>Set a monthly spending limit for your account.</p>
+        <h2>{i18n.t("workspace.monthlyLimit.title")}</h2>
+        <p>{i18n.t("workspace.monthlyLimit.subtitle")}</p>
       </div>
       <div data-slot="section-content">
         <div data-slot="balance">
           <div data-slot="amount">
-            {balanceInfo()?.monthlyLimit ? <span data-slot="currency">$</span> : null}
-            <span data-slot="value">{balanceInfo()?.monthlyLimit ?? "-"}</span>
+            {billingInfo()?.monthlyLimit ? <span data-slot="currency">$</span> : null}
+            <span data-slot="value">{billingInfo()?.monthlyLimit ?? "-"}</span>
           </div>
           <Show
             when={!store.show}
@@ -87,48 +84,57 @@ export function MonthlyLimitSection() {
                     data-component="input"
                     name="limit"
                     type="number"
-                    placeholder="50"
+                    placeholder={i18n.t("workspace.monthlyLimit.placeholder")}
                   />
                   <Show when={submission.result && submission.result.error}>
-                    {(err) => <div data-slot="form-error">{err()}</div>}
+                    {(err) => <div data-slot="form-error">{localizeError(i18n.t, err())}</div>}
                   </Show>
                 </div>
                 <input type="hidden" name="workspaceID" value={params.id} />
                 <div data-slot="form-actions">
                   <button type="reset" data-color="ghost" onClick={() => hide()}>
-                    Cancel
+                    {i18n.t("common.cancel")}
                   </button>
                   <button type="submit" data-color="primary" disabled={submission.pending}>
-                    {submission.pending ? "Setting..." : "Set"}
+                    {submission.pending
+                      ? i18n.t("workspace.monthlyLimit.setting")
+                      : i18n.t("workspace.monthlyLimit.set")}
                   </button>
                 </div>
               </form>
             }
           >
             <button data-color="primary" onClick={() => show()}>
-              {balanceInfo()?.monthlyLimit ? "Edit Limit" : "Set Limit"}
+              {billingInfo()?.monthlyLimit
+                ? i18n.t("workspace.monthlyLimit.edit")
+                : i18n.t("workspace.monthlyLimit.set")}
             </button>
           </Show>
         </div>
-        <Show when={balanceInfo()?.monthlyLimit} fallback={<p data-slot="usage-status">No spending limit set.</p>}>
+        <Show
+          when={billingInfo()?.monthlyLimit}
+          fallback={<p data-slot="usage-status">{i18n.t("workspace.monthlyLimit.noLimit")}</p>}
+        >
           <p data-slot="usage-status">
-            Current usage for {new Date().toLocaleDateString("en-US", { month: "long", timeZone: "UTC" })} is $
+            {i18n.t("workspace.monthlyLimit.currentUsage.beforeMonth")}{" "}
+            {new Date().toLocaleDateString(undefined, { month: "long", timeZone: "UTC" })}{" "}
+            {i18n.t("workspace.monthlyLimit.currentUsage.beforeAmount")}
             {(() => {
-              const dateLastUsed = balanceInfo()?.timeMonthlyUsageUpdated
+              const dateLastUsed = billingInfo()?.timeMonthlyUsageUpdated
               if (!dateLastUsed) return "0"
 
-              const current = new Date().toLocaleDateString("en-US", {
+              const current = new Date().toLocaleDateString(undefined, {
                 year: "numeric",
                 month: "long",
                 timeZone: "UTC",
               })
-              const lastUsed = dateLastUsed.toLocaleDateString("en-US", {
+              const lastUsed = dateLastUsed.toLocaleDateString(undefined, {
                 year: "numeric",
                 month: "long",
                 timeZone: "UTC",
               })
               if (current !== lastUsed) return "0"
-              return ((balanceInfo()?.monthlyUsage ?? 0) / 100000000).toFixed(2)
+              return ((billingInfo()?.monthlyUsage ?? 0) / 100000000).toFixed(2)
             })()}
             .
           </p>

@@ -1,7 +1,8 @@
 {
   "name": "@opencode-ai/slack",
-  "version": "1.0.7",
+  "version": "1.4.6",
   "type": "module",
+  "license": "MIT",
   "scripts": {
     "dev": "bun run src/index.ts",
     "typecheck": "tsgo --noEmit"

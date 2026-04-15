@@ -5,139 +5,187 @@
 
 import z from "zod"
 import * as path from "path"
+import { Effect } from "effect"
 import { Tool } from "./tool"
 import { LSP } from "../lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
-import { Permission } from "../permission"
 import DESCRIPTION from "./edit.txt"
 import { File } from "../file"
+import { FileWatcher } from "../file/watcher"
 import { Bus } from "../bus"
+import { Format } from "../format"
 import { FileTime } from "../file/time"
 import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
-import { Agent } from "../agent/agent"
 import { Snapshot } from "@/snapshot"
+import { assertExternalDirectoryEffect } from "./external-directory"
+import { AppFileSystem } from "@opencode-ai/shared/filesystem"
 
-export const EditTool = Tool.define("edit", {
-  description: DESCRIPTION,
-  parameters: z.object({
-    filePath: z.string().describe("The absolute path to the file to modify"),
-    oldString: z.string().describe("The text to replace"),
-    newString: z.string().describe("The text to replace it with (must be different from oldString)"),
-    replaceAll: z.boolean().optional().describe("Replace all occurrences of oldString (default false)"),
-  }),
-  async execute(params, ctx) {
-    if (!params.filePath) {
-      throw new Error("filePath is required")
-    }
+function normalizeLineEndings(text: string): string {
+  return text.replaceAll("\r\n", "\n")
+}
 
-    if (params.oldString === params.newString) {
-      throw new Error("oldString and newString must be different")
-    }
+function detectLineEnding(text: string): "\n" | "\r\n" {
+  return text.includes("\r\n") ? "\r\n" : "\n"
+}
 
-    const filePath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
-    if (!Filesystem.contains(Instance.directory, filePath)) {
-      throw new Error(`File ${filePath} is not in the current working directory`)
-    }
+function convertToLineEnding(text: string, ending: "\n" | "\r\n"): string {
+  if (ending === "\n") return text
+  return text.replaceAll("\n", "\r\n")
+}
 
-    const agent = await Agent.get(ctx.agent)
-    let diff = ""
-    let contentOld = ""
-    let contentNew = ""
-    await (async () => {
-      if (params.oldString === "") {
-        contentNew = params.newString
-        diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
-        if (agent.permission.edit === "ask") {
-          await Permission.ask({
-            type: "edit",
-            sessionID: ctx.sessionID,
-            messageID: ctx.messageID,
-            callID: ctx.callID,
-            title: "Edit this file: " + filePath,
-            metadata: {
-              filePath,
-              diff,
-            },
-          })
-        }
-        await Bun.write(filePath, params.newString)
-        await Bus.publish(File.Event.Edited, {
-          file: filePath,
-        })
-        return
-      }
+const Parameters = z.object({
+  filePath: z.string().describe("The absolute path to the file to modify"),
+  oldString: z.string().describe("The text to replace"),
+  newString: z.string().describe("The text to replace it with (must be different from oldString)"),
+  replaceAll: z.boolean().optional().describe("Replace all occurrences of oldString (default false)"),
+})
 
-      const file = Bun.file(filePath)
-      const stats = await file.stat().catch(() => {})
-      if (!stats) throw new Error(`File ${filePath} not found`)
-      if (stats.isDirectory()) throw new Error(`Path is a directory, not a file: ${filePath}`)
-      await FileTime.assert(ctx.sessionID, filePath)
-      contentOld = await file.text()
-      contentNew = replace(contentOld, params.oldString, params.newString, params.replaceAll)
-
-      diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
-      if (agent.permission.edit === "ask") {
-        await Permission.ask({
-          type: "edit",
-          sessionID: ctx.sessionID,
-          messageID: ctx.messageID,
-          callID: ctx.callID,
-          title: "Edit this file: " + filePath,
-          metadata: {
-            filePath,
-            diff,
-          },
-        })
-      }
-
-      await file.write(contentNew)
-      await Bus.publish(File.Event.Edited, {
-        file: filePath,
-      })
-      contentNew = await file.text()
-      diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
-    })()
-
-    FileTime.read(ctx.sessionID, filePath)
-
-    let output = ""
-    await LSP.touchFile(filePath, true)
-    const diagnostics = await LSP.diagnostics()
-    for (const [file, issues] of Object.entries(diagnostics)) {
-      if (issues.length === 0) continue
-      if (file === filePath) {
-        output += `\nThis file has errors, please fix\n<file_diagnostics>\n${issues
-          .filter((item) => item.severity === 1)
-          .map(LSP.Diagnostic.pretty)
-          .join("\n")}\n</file_diagnostics>\n`
-        continue
-      }
-    }
-
-    const filediff: Snapshot.FileDiff = {
-      file: filePath,
-      before: contentOld,
-      after: contentNew,
-      additions: 0,
-      deletions: 0,
-    }
-    for (const change of diffLines(contentOld, contentNew)) {
-      if (change.added) filediff.additions += change.count || 0
-      if (change.removed) filediff.deletions += change.count || 0
-    }
+export const EditTool = Tool.define(
+  "edit",
+  Effect.gen(function* () {
+    const lsp = yield* LSP.Service
+    const filetime = yield* FileTime.Service
+    const afs = yield* AppFileSystem.Service
+    const format = yield* Format.Service
+    const bus = yield* Bus.Service
 
     return {
-      metadata: {
-        diagnostics,
-        diff,
-        filediff,
-      },
-      title: `${path.relative(Instance.worktree, filePath)}`,
-      output,
+      description: DESCRIPTION,
+      parameters: Parameters,
+      execute: (params: z.infer<typeof Parameters>, ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          if (!params.filePath) {
+            throw new Error("filePath is required")
+          }
+
+          if (params.oldString === params.newString) {
+            throw new Error("No changes to apply: oldString and newString are identical.")
+          }
+
+          const filePath = path.isAbsolute(params.filePath)
+            ? params.filePath
+            : path.join(Instance.directory, params.filePath)
+          yield* assertExternalDirectoryEffect(ctx, filePath)
+
+          let diff = ""
+          let contentOld = ""
+          let contentNew = ""
+          yield* filetime.withLock(filePath, () =>
+            Effect.gen(function* () {
+              if (params.oldString === "") {
+                const existed = yield* afs.existsSafe(filePath)
+                contentNew = params.newString
+                diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
+                yield* ctx.ask({
+                  permission: "edit",
+                  patterns: [path.relative(Instance.worktree, filePath)],
+                  always: ["*"],
+                  metadata: {
+                    filepath: filePath,
+                    diff,
+                  },
+                })
+                yield* afs.writeWithDirs(filePath, params.newString)
+                yield* format.file(filePath)
+                yield* bus.publish(File.Event.Edited, { file: filePath })
+                yield* bus.publish(FileWatcher.Event.Updated, {
+                  file: filePath,
+                  event: existed ? "change" : "add",
+                })
+                yield* filetime.read(ctx.sessionID, filePath)
+                return
+              }
+
+              const info = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
+              if (!info) throw new Error(`File ${filePath} not found`)
+              if (info.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
+              yield* filetime.assert(ctx.sessionID, filePath)
+              contentOld = yield* afs.readFileString(filePath)
+
+              const ending = detectLineEnding(contentOld)
+              const old = convertToLineEnding(normalizeLineEndings(params.oldString), ending)
+              const next = convertToLineEnding(normalizeLineEndings(params.newString), ending)
+
+              contentNew = replace(contentOld, old, next, params.replaceAll)
+
+              diff = trimDiff(
+                createTwoFilesPatch(
+                  filePath,
+                  filePath,
+                  normalizeLineEndings(contentOld),
+                  normalizeLineEndings(contentNew),
+                ),
+              )
+              yield* ctx.ask({
+                permission: "edit",
+                patterns: [path.relative(Instance.worktree, filePath)],
+                always: ["*"],
+                metadata: {
+                  filepath: filePath,
+                  diff,
+                },
+              })
+
+              yield* afs.writeWithDirs(filePath, contentNew)
+              yield* format.file(filePath)
+              yield* bus.publish(File.Event.Edited, { file: filePath })
+              yield* bus.publish(FileWatcher.Event.Updated, {
+                file: filePath,
+                event: "change",
+              })
+              contentNew = yield* afs.readFileString(filePath)
+              diff = trimDiff(
+                createTwoFilesPatch(
+                  filePath,
+                  filePath,
+                  normalizeLineEndings(contentOld),
+                  normalizeLineEndings(contentNew),
+                ),
+              )
+              yield* filetime.read(ctx.sessionID, filePath)
+            }).pipe(Effect.orDie),
+          )
+
+          const filediff: Snapshot.FileDiff = {
+            file: filePath,
+            patch: diff,
+            additions: 0,
+            deletions: 0,
+          }
+          for (const change of diffLines(contentOld, contentNew)) {
+            if (change.added) filediff.additions += change.count || 0
+            if (change.removed) filediff.deletions += change.count || 0
+          }
+
+          yield* ctx.metadata({
+            metadata: {
+              diff,
+              filediff,
+              diagnostics: {},
+            },
+          })
+
+          let output = "Edit applied successfully."
+          yield* lsp.touchFile(filePath, true)
+          const diagnostics = yield* lsp.diagnostics()
+          const normalizedFilePath = Filesystem.normalizePath(filePath)
+          const block = LSP.Diagnostic.report(filePath, diagnostics[normalizedFilePath] ?? [])
+          if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
+
+          return {
+            metadata: {
+              diagnostics,
+              diff,
+              filediff,
+            },
+            title: `${path.relative(Instance.worktree, filePath)}`,
+            output,
+          }
+        }),
     }
-  },
-})
+  }),
+)
 
 export type Replacer = (content: string, find: string) => Generator<string, void, unknown>
 
@@ -602,7 +650,7 @@ export function trimDiff(diff: string): string {
 
 export function replace(content: string, oldString: string, newString: string, replaceAll = false): string {
   if (oldString === newString) {
-    throw new Error("oldString and newString must be different")
+    throw new Error("No changes to apply: oldString and newString are identical.")
   }
 
   let notFound = true
@@ -632,9 +680,9 @@ export function replace(content: string, oldString: string, newString: string, r
   }
 
   if (notFound) {
-    throw new Error("oldString not found in content")
+    throw new Error(
+      "Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.",
+    )
   }
-  throw new Error(
-    "Found multiple matches for oldString. Provide more surrounding lines in oldString to identify the correct match.",
-  )
+  throw new Error("Found multiple matches for oldString. Provide more surrounding context to make the match unique.")
 }

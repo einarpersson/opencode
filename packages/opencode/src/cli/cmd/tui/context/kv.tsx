@@ -1,5 +1,6 @@
 import { Global } from "@/global"
-import { createSignal } from "solid-js"
+import { Filesystem } from "@/util/filesystem"
+import { createSignal, type Setter } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import path from "path"
@@ -8,38 +9,44 @@ export const { use: useKV, provider: KVProvider } = createSimpleContext({
   name: "KV",
   init: () => {
     const [ready, setReady] = createSignal(false)
-    const [kvStore, setKvStore] = createStore({
-      openrouter_warning: false,
-      theme: "opencode",
-    })
-    const file = Bun.file(path.join(Global.Path.state, "kv.json"))
+    const [store, setStore] = createStore<Record<string, any>>()
+    const filePath = path.join(Global.Path.state, "kv.json")
 
-    file
-      .json()
+    Filesystem.readJson(filePath)
       .then((x) => {
-        setKvStore(x)
+        setStore(x)
       })
       .catch(() => {})
       .finally(() => {
         setReady(true)
       })
 
-    return {
-      get data() {
-        return kvStore
-      },
+    const result = {
       get ready() {
         return ready()
       },
+      get store() {
+        return store
+      },
+      signal<T>(name: string, defaultValue: T) {
+        if (store[name] === undefined) setStore(name, defaultValue)
+        return [
+          function () {
+            return result.get(name)
+          },
+          function setter(next: Setter<T>) {
+            result.set(name, next)
+          },
+        ] as const
+      },
+      get(key: string, defaultValue?: any) {
+        return store[key] ?? defaultValue
+      },
       set(key: string, value: any) {
-        setKvStore(key as any, value)
-        Bun.write(
-          file,
-          JSON.stringify({
-            [key]: value,
-          }),
-        )
+        setStore(key, value)
+        Filesystem.writeJson(filePath, store)
       },
     }
+    return result
   },
 })

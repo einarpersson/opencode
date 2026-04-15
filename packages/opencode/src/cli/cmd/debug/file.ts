@@ -1,10 +1,14 @@
 import { EOL } from "os"
+import { Effect } from "effect"
+import { AppRuntime } from "@/effect/app-runtime"
 import { File } from "../../../file"
 import { bootstrap } from "../../bootstrap"
 import { cmd } from "../cmd"
+import { Ripgrep } from "@/file/ripgrep"
 
 const FileSearchCommand = cmd({
   command: "search <query>",
+  describe: "search files by query",
   builder: (yargs) =>
     yargs.positional("query", {
       type: "string",
@@ -13,7 +17,11 @@ const FileSearchCommand = cmd({
     }),
   async handler(args) {
     await bootstrap(process.cwd(), async () => {
-      const results = await File.search({ query: args.query })
+      const results = await AppRuntime.runPromise(
+        Effect.gen(function* () {
+          return yield* File.Service.use((svc) => svc.search({ query: args.query }))
+        }),
+      )
       process.stdout.write(results.join(EOL) + EOL)
     })
   },
@@ -21,6 +29,7 @@ const FileSearchCommand = cmd({
 
 const FileReadCommand = cmd({
   command: "read <path>",
+  describe: "read file contents as JSON",
   builder: (yargs) =>
     yargs.positional("path", {
       type: "string",
@@ -29,7 +38,11 @@ const FileReadCommand = cmd({
     }),
   async handler(args) {
     await bootstrap(process.cwd(), async () => {
-      const content = await File.read(args.path)
+      const content = await AppRuntime.runPromise(
+        Effect.gen(function* () {
+          return yield* File.Service.use((svc) => svc.read(args.path))
+        }),
+      )
       process.stdout.write(JSON.stringify(content, null, 2) + EOL)
     })
   },
@@ -37,10 +50,15 @@ const FileReadCommand = cmd({
 
 const FileStatusCommand = cmd({
   command: "status",
+  describe: "show file status information",
   builder: (yargs) => yargs,
   async handler() {
     await bootstrap(process.cwd(), async () => {
-      const status = await File.status()
+      const status = await AppRuntime.runPromise(
+        Effect.gen(function* () {
+          return yield* File.Service.use((svc) => svc.status())
+        }),
+      )
       process.stdout.write(JSON.stringify(status, null, 2) + EOL)
     })
   },
@@ -48,6 +66,7 @@ const FileStatusCommand = cmd({
 
 const FileListCommand = cmd({
   command: "list <path>",
+  describe: "list files in a directory",
   builder: (yargs) =>
     yargs.positional("path", {
       type: "string",
@@ -56,20 +75,41 @@ const FileListCommand = cmd({
     }),
   async handler(args) {
     await bootstrap(process.cwd(), async () => {
-      const files = await File.list(args.path)
+      const files = await AppRuntime.runPromise(
+        Effect.gen(function* () {
+          return yield* File.Service.use((svc) => svc.list(args.path))
+        }),
+      )
       process.stdout.write(JSON.stringify(files, null, 2) + EOL)
     })
   },
 })
 
+const FileTreeCommand = cmd({
+  command: "tree [dir]",
+  describe: "show directory tree",
+  builder: (yargs) =>
+    yargs.positional("dir", {
+      type: "string",
+      description: "Directory to tree",
+      default: process.cwd(),
+    }),
+  async handler(args) {
+    const files = await Ripgrep.tree({ cwd: args.dir, limit: 200 })
+    console.log(JSON.stringify(files, null, 2))
+  },
+})
+
 export const FileCommand = cmd({
   command: "file",
+  describe: "file system debugging utilities",
   builder: (yargs) =>
     yargs
       .command(FileReadCommand)
       .command(FileStatusCommand)
       .command(FileListCommand)
       .command(FileSearchCommand)
+      .command(FileTreeCommand)
       .demandCommand(),
   async handler() {},
 })

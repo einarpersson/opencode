@@ -2,9 +2,14 @@
 /* tslint:disable */
 /* eslint-disable */
 /* deno-fmt-ignore-file */
+/* biome-ignore-all lint: auto-generated */
 
 declare module "sst" {
   export interface Resource {
+    "ADMIN_SECRET": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
     "AUTH_API_URL": {
       "type": "sst.sst.Linkable"
       "value": string
@@ -26,15 +31,32 @@ declare module "sst" {
       "url": string
     }
     "AuthStorage": {
+      "namespaceId": string
       "type": "sst.cloudflare.Kv"
     }
     "Bucket": {
       "name": string
       "type": "sst.cloudflare.Bucket"
     }
+    "CLOUDFLARE_API_TOKEN": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "CLOUDFLARE_DEFAULT_ACCOUNT_ID": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
     "Console": {
       "type": "sst.cloudflare.SolidStart"
       "url": string
+    }
+    "DISCORD_SUPPORT_BOT_TOKEN": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "DISCORD_SUPPORT_CHANNEL_ID": {
+      "type": "sst.sst.Secret"
+      "value": string
     }
     "Database": {
       "database": string
@@ -44,11 +66,19 @@ declare module "sst" {
       "type": "sst.sst.Linkable"
       "username": string
     }
-    "Desktop": {
-      "type": "sst.cloudflare.StaticSite"
-      "url": string
-    }
     "EMAILOCTOPUS_API_KEY": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "EnterpriseStorage": {
+      "name": string
+      "type": "sst.cloudflare.Bucket"
+    }
+    "FEISHU_APP_ID": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "FEISHU_APP_SECRET": {
       "type": "sst.sst.Secret"
       "value": string
     }
@@ -72,12 +102,40 @@ declare module "sst" {
       "type": "sst.sst.Secret"
       "value": string
     }
+    "GatewayKv": {
+      "namespaceId": string
+      "type": "sst.cloudflare.Kv"
+    }
     "HONEYCOMB_API_KEY": {
       "type": "sst.sst.Secret"
       "value": string
     }
     "LogProcessor": {
       "type": "sst.cloudflare.Worker"
+    }
+    "R2AccessKey": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "R2SecretKey": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "SALESFORCE_CLIENT_ID": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "SALESFORCE_CLIENT_SECRET": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "SALESFORCE_INSTANCE_URL": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "STRIPE_PUBLISHABLE_KEY": {
+      "type": "sst.sst.Secret"
+      "value": string
     }
     "STRIPE_SECRET_KEY": {
       "type": "sst.sst.Secret"
@@ -87,13 +145,172 @@ declare module "sst" {
       "type": "sst.sst.Linkable"
       "value": string
     }
+    "Teams": {
+      "type": "sst.cloudflare.SolidStart"
+      "url": string
+    }
     "Web": {
       "type": "sst.cloudflare.Astro"
       "url": string
     }
-    "ZEN_MODELS": {
+    "WebApp": {
+      "type": "sst.cloudflare.StaticSite"
+      "url": string
+    }
+    "ZEN_BLACK_PRICE": {
+      "plan100": string
+      "plan20": string
+      "plan200": string
+      "product": string
+      "type": "sst.sst.Linkable"
+    }
+    "ZEN_LIMITS": {
       "type": "sst.sst.Secret"
       "value": string
+    }
+    "ZEN_LITE_COUPON_FIRST_MONTH_100_INVITEES": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_LITE_PRICE": {
+      "firstMonth100Coupon": string
+      "firstMonth50Coupon": string
+      "price": string
+      "priceInr": number
+      "product": string
+      "type": "sst.sst.Linkable"
+    }
+    "ZEN_MODELS1": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS10": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS11": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS12": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS13": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS14": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS15": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS16": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS17": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS18": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS19": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS2": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS20": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS21": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS22": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS23": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS24": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS25": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS26": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS27": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS28": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS29": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS3": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS30": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS4": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS5": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS6": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS7": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS8": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_MODELS9": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZEN_SESSION_SECRET": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ZenData": {
+      "name": string
+      "type": "sst.cloudflare.Bucket"
+    }
+    "ZenDataNew": {
+      "name": string
+      "type": "sst.cloudflare.Bucket"
     }
   }
 }

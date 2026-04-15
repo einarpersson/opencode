@@ -1,73 +1,96 @@
 import z from "zod"
 import * as path from "path"
+import { Effect } from "effect"
 import { Tool } from "./tool"
 import { LSP } from "../lsp"
-import { Permission } from "../permission"
+import { createTwoFilesPatch } from "diff"
 import DESCRIPTION from "./write.txt"
 import { Bus } from "../bus"
 import { File } from "../file"
+import { FileWatcher } from "../file/watcher"
+import { Format } from "../format"
 import { FileTime } from "../file/time"
-import { Filesystem } from "../util/filesystem"
+import { AppFileSystem } from "@opencode-ai/shared/filesystem"
 import { Instance } from "../project/instance"
-import { Agent } from "../agent/agent"
+import { trimDiff } from "./edit"
+import { assertExternalDirectoryEffect } from "./external-directory"
 
-export const WriteTool = Tool.define("write", {
-  description: DESCRIPTION,
-  parameters: z.object({
-    content: z.string().describe("The content to write to the file"),
-    filePath: z.string().describe("The absolute path to the file to write (must be absolute, not relative)"),
-  }),
-  async execute(params, ctx) {
-    const filepath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
-    if (!Filesystem.contains(Instance.directory, filepath)) {
-      throw new Error(`File ${filepath} is not in the current working directory`)
-    }
+const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
-    const file = Bun.file(filepath)
-    const exists = await file.exists()
-    if (exists) await FileTime.assert(ctx.sessionID, filepath)
-
-    const agent = await Agent.get(ctx.agent)
-    if (agent.permission.edit === "ask")
-      await Permission.ask({
-        type: "write",
-        sessionID: ctx.sessionID,
-        messageID: ctx.messageID,
-        callID: ctx.callID,
-        title: exists ? "Overwrite this file: " + filepath : "Create new file: " + filepath,
-        metadata: {
-          filePath: filepath,
-          content: params.content,
-          exists,
-        },
-      })
-
-    await Bun.write(filepath, params.content)
-    await Bus.publish(File.Event.Edited, {
-      file: filepath,
-    })
-    FileTime.read(ctx.sessionID, filepath)
-
-    let output = ""
-    await LSP.touchFile(filepath, true)
-    const diagnostics = await LSP.diagnostics()
-    for (const [file, issues] of Object.entries(diagnostics)) {
-      if (issues.length === 0) continue
-      if (file === filepath) {
-        output += `\nThis file has errors, please fix\n<file_diagnostics>\n${issues.map(LSP.Diagnostic.pretty).join("\n")}\n</file_diagnostics>\n`
-        continue
-      }
-      output += `\n<project_diagnostics>\n${file}\n${issues.map(LSP.Diagnostic.pretty).join("\n")}\n</project_diagnostics>\n`
-    }
+export const WriteTool = Tool.define(
+  "write",
+  Effect.gen(function* () {
+    const lsp = yield* LSP.Service
+    const fs = yield* AppFileSystem.Service
+    const filetime = yield* FileTime.Service
+    const bus = yield* Bus.Service
+    const format = yield* Format.Service
 
     return {
-      title: path.relative(Instance.worktree, filepath),
-      metadata: {
-        diagnostics,
-        filepath,
-        exists: exists,
-      },
-      output,
+      description: DESCRIPTION,
+      parameters: z.object({
+        content: z.string().describe("The content to write to the file"),
+        filePath: z.string().describe("The absolute path to the file to write (must be absolute, not relative)"),
+      }),
+      execute: (params: { content: string; filePath: string }, ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const filepath = path.isAbsolute(params.filePath)
+            ? params.filePath
+            : path.join(Instance.directory, params.filePath)
+          yield* assertExternalDirectoryEffect(ctx, filepath)
+
+          const exists = yield* fs.existsSafe(filepath)
+          const contentOld = exists ? yield* fs.readFileString(filepath) : ""
+          if (exists) yield* filetime.assert(ctx.sessionID, filepath)
+
+          const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, params.content))
+          yield* ctx.ask({
+            permission: "edit",
+            patterns: [path.relative(Instance.worktree, filepath)],
+            always: ["*"],
+            metadata: {
+              filepath,
+              diff,
+            },
+          })
+
+          yield* fs.writeWithDirs(filepath, params.content)
+          yield* format.file(filepath)
+          yield* bus.publish(File.Event.Edited, { file: filepath })
+          yield* bus.publish(FileWatcher.Event.Updated, {
+            file: filepath,
+            event: exists ? "change" : "add",
+          })
+          yield* filetime.read(ctx.sessionID, filepath)
+
+          let output = "Wrote file successfully."
+          yield* lsp.touchFile(filepath, true)
+          const diagnostics = yield* lsp.diagnostics()
+          const normalizedFilepath = AppFileSystem.normalizePath(filepath)
+          let projectDiagnosticsCount = 0
+          for (const [file, issues] of Object.entries(diagnostics)) {
+            const current = file === normalizedFilepath
+            if (!current && projectDiagnosticsCount >= MAX_PROJECT_DIAGNOSTICS_FILES) continue
+            const block = LSP.Diagnostic.report(current ? filepath : file, issues)
+            if (!block) continue
+            if (current) {
+              output += `\n\nLSP errors detected in this file, please fix:\n${block}`
+              continue
+            }
+            projectDiagnosticsCount++
+            output += `\n\nLSP errors detected in other files:\n${block}`
+          }
+
+          return {
+            title: path.relative(Instance.worktree, filepath),
+            metadata: {
+              diagnostics,
+              filepath,
+              exists: exists,
+            },
+            output,
+          }
+        }).pipe(Effect.orDie),
     }
-  },
-})
+  }),
+)

@@ -6,12 +6,14 @@ type Usage = {
   total_tokens?: number
   // used by moonshot
   cached_tokens?: number
-  // used by xai
+  // used by xai & alibaba
   prompt_tokens_details?: {
     text_tokens?: number
     audio_tokens?: number
     image_tokens?: number
     cached_tokens?: number
+    // used by alibaba
+    cache_creation_input_tokens?: number
   }
   completion_tokens_details?: {
     reasoning_tokens?: number
@@ -21,18 +23,22 @@ type Usage = {
   }
 }
 
-export const oaCompatHelper = {
+export const oaCompatHelper: ProviderHelper = ({ adjustCacheUsage, safetyIdentifier }) => ({
   format: "oa-compat",
   modifyUrl: (providerApi: string) => providerApi + "/chat/completions",
   modifyHeaders: (headers: Headers, body: Record<string, any>, apiKey: string) => {
     headers.set("authorization", `Bearer ${apiKey}`)
+    headers.set("x-session-affinity", headers.get("x-opencode-session") ?? "")
   },
-  modifyBody: (body: Record<string, any>) => {
+  modifyBody: (body: Record<string, any>, workspaceID?: string) => {
     return {
       ...body,
       ...(body.stream ? { stream_options: { include_usage: true } } : {}),
+      ...(safetyIdentifier ? { safety_identifier: safetyIdentifier } : {}),
     }
   },
+  createBinaryStreamDecoder: () => undefined,
+  streamSeparator: "\n\n",
   createUsageParser: () => {
     let usage: Usage
 
@@ -54,20 +60,26 @@ export const oaCompatHelper = {
     }
   },
   normalizeUsage: (usage: Usage) => {
-    const inputTokens = usage.prompt_tokens ?? 0
+    let inputTokens = usage.prompt_tokens ?? 0
     const outputTokens = usage.completion_tokens ?? 0
     const reasoningTokens = usage.completion_tokens_details?.reasoning_tokens ?? undefined
-    const cacheReadTokens = usage.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? undefined
+    let cacheReadTokens = usage.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? undefined
+    const cacheWriteTokens = usage.prompt_tokens_details?.cache_creation_input_tokens ?? undefined
+
+    if (adjustCacheUsage && !cacheReadTokens) {
+      cacheReadTokens = Math.floor(inputTokens * 0.9)
+    }
+
     return {
       inputTokens: inputTokens - (cacheReadTokens ?? 0),
       outputTokens,
       reasoningTokens,
       cacheReadTokens,
-      cacheWrite5mTokens: undefined,
+      cacheWrite5mTokens: cacheWriteTokens,
       cacheWrite1hTokens: undefined,
     }
   },
-} satisfies ProviderHelper
+})
 
 export function fromOaCompatibleRequest(body: any): CommonRequest {
   if (!body || typeof body !== "object") return body
@@ -532,7 +544,9 @@ export function toOaCompatibleChunk(chunk: CommonChunk): string {
       total_tokens: chunk.usage.total_tokens,
       ...(chunk.usage.prompt_tokens_details?.cached_tokens
         ? {
-            prompt_tokens_details: { cached_tokens: chunk.usage.prompt_tokens_details.cached_tokens },
+            prompt_tokens_details: {
+              cached_tokens: chunk.usage.prompt_tokens_details.cached_tokens,
+            },
           }
         : {}),
     }

@@ -1,9 +1,8 @@
 import { Resource } from "@opencode-ai/console-resource"
 import { Actor } from "@opencode-ai/console-core/actor.js"
-import { action, query } from "@solidjs/router"
+import { action, json, query } from "@solidjs/router"
 import { withActor } from "~/context/auth.withActor"
 import { Billing } from "@opencode-ai/console-core/billing.js"
-import { User } from "@opencode-ai/console-core/user.js"
 import { and, Database, desc, eq, isNull } from "@opencode-ai/console-core/drizzle/index.js"
 import { WorkspaceTable } from "@opencode-ai/console-core/schema/workspace.sql.js"
 import { UserTable } from "@opencode-ai/console-core/schema/user.sql.js"
@@ -31,7 +30,12 @@ export function formatDateUTC(date: Date) {
     timeZoneName: "short",
     timeZone: "UTC",
   }
-  return date.toLocaleDateString("en-US", options)
+  return date.toLocaleDateString(undefined, options)
+}
+
+export function formatBalance(amount: number) {
+  const balance = ((amount ?? 0) / 100000000).toFixed(2)
+  return balance === "-0.00" ? "0.00" : balance
 }
 
 export async function getLastSeenWorkspaceID() {
@@ -62,23 +66,57 @@ export const querySessionInfo = query(async (workspaceID: string) => {
   return withActor(() => {
     return {
       isAdmin: Actor.userRole() === "admin",
-      isBeta:
-        Resource.App.stage === "production"
-          ? workspaceID === "wrk_01K46JDFR0E75SG2Q8K172KF3Y"
-          : true,
+      isBeta: Resource.App.stage === "production" ? workspaceID === "wrk_01K46JDFR0E75SG2Q8K172KF3Y" : true,
     }
   }, workspaceID)
 }, "session.get")
 
 export const createCheckoutUrl = action(
-  async (workspaceID: string, successUrl: string, cancelUrl: string) => {
+  async (workspaceID: string, amount: number, successUrl: string, cancelUrl: string) => {
     "use server"
-    return withActor(() => Billing.generateCheckoutUrl({ successUrl, cancelUrl }), workspaceID)
+    return json(
+      await withActor(
+        () =>
+          Billing.generateCheckoutUrl({ amount, successUrl, cancelUrl })
+            .then((data) => ({ error: undefined, data }))
+            .catch((e) => ({
+              error: e.message as string,
+              data: undefined,
+            })),
+        workspaceID,
+      ),
+    )
   },
   "checkoutUrl",
 )
 
 export const queryBillingInfo = query(async (workspaceID: string) => {
   "use server"
-  return withActor(() => Billing.get(), workspaceID)
+  return withActor(async () => {
+    const billing = await Billing.get()
+    return {
+      customerID: billing.customerID,
+      paymentMethodID: billing.paymentMethodID,
+      paymentMethodType: billing.paymentMethodType,
+      paymentMethodLast4: billing.paymentMethodLast4,
+      balance: billing.balance,
+      reload: billing.reload,
+      reloadAmount: billing.reloadAmount ?? Billing.RELOAD_AMOUNT,
+      reloadAmountMin: Billing.RELOAD_AMOUNT_MIN,
+      reloadTrigger: billing.reloadTrigger ?? Billing.RELOAD_TRIGGER,
+      reloadTriggerMin: Billing.RELOAD_TRIGGER_MIN,
+      monthlyLimit: billing.monthlyLimit,
+      monthlyUsage: billing.monthlyUsage,
+      timeMonthlyUsageUpdated: billing.timeMonthlyUsageUpdated,
+      reloadError: billing.reloadError,
+      timeReloadError: billing.timeReloadError,
+      subscription: billing.subscription,
+      subscriptionID: billing.subscriptionID,
+      subscriptionPlan: billing.subscriptionPlan,
+      timeSubscriptionBooked: billing.timeSubscriptionBooked,
+      timeSubscriptionSelected: billing.timeSubscriptionSelected,
+      lite: billing.lite,
+      liteSubscriptionID: billing.liteSubscriptionID,
+    }
+  }, workspaceID)
 }, "billing.get")

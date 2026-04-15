@@ -1,55 +1,59 @@
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { batch, createContext, createEffect, Show, useContext, type JSX, type ParentProps } from "solid-js"
+import { batch, createContext, Show, useContext, type JSX, type ParentProps } from "solid-js"
 import { useTheme } from "@tui/context/theme"
-import { Renderable, RGBA } from "@opentui/core"
+import { MouseButton, Renderable, RGBA } from "@opentui/core"
 import { createStore } from "solid-js/store"
-import { createEventBus } from "@solid-primitives/event-bus"
+import { useToast } from "./toast"
+import { Flag } from "@/flag/flag"
+import { Selection } from "@tui/util/selection"
 
-const Border = {
-  topLeft: "┃",
-  topRight: "┃",
-  bottomLeft: "┃",
-  bottomRight: "┃",
-  horizontal: "",
-  vertical: "┃",
-  topT: "+",
-  bottomT: "+",
-  leftT: "+",
-  rightT: "+",
-  cross: "+",
-}
 export function Dialog(
   props: ParentProps<{
-    size?: "medium" | "large"
+    size?: "medium" | "large" | "xlarge"
     onClose: () => void
   }>,
 ) {
   const dimensions = useTerminalDimensions()
   const { theme } = useTheme()
+  const renderer = useRenderer()
+
+  let dismiss = false
+  const width = () => {
+    if (props.size === "xlarge") return 116
+    if (props.size === "large") return 88
+    return 60
+  }
 
   return (
     <box
-      onMouseUp={async () => {
+      onMouseDown={() => {
+        dismiss = !!renderer.getSelection()
+      }}
+      onMouseUp={() => {
+        if (dismiss) {
+          dismiss = false
+          return
+        }
         props.onClose?.()
       }}
       width={dimensions().width}
       height={dimensions().height}
       alignItems="center"
       position="absolute"
+      zIndex={3000}
       paddingTop={dimensions().height / 4}
       left={0}
       top={0}
       backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
     >
       <box
-        onMouseUp={async (e) => {
+        onMouseUp={(e) => {
+          dismiss = false
           e.stopPropagation()
         }}
-        customBorderChars={Border}
-        width={props.size === "large" ? 80 : 60}
+        width={width()}
         maxWidth={dimensions().width - 2}
         backgroundColor={theme.backgroundPanel}
-        borderColor={theme.border}
         paddingTop={1}
       >
         {props.children}
@@ -64,21 +68,28 @@ function init() {
       element: JSX.Element
       onClose?: () => void
     }[],
-    size: "medium" as "medium" | "large",
+    size: "medium" as "medium" | "large" | "xlarge",
   })
-  const allClosedEvent = createEventBus<void>()
+
+  const renderer = useRenderer()
 
   useKeyboard((evt) => {
-    if (evt.name === "escape" && store.stack.length > 0) {
+    if (store.stack.length === 0) return
+    if (evt.defaultPrevented) return
+    if ((evt.name === "escape" || (evt.ctrl && evt.name === "c")) && renderer.getSelection()?.getSelectedText()) return
+    if (evt.name === "escape" || (evt.ctrl && evt.name === "c")) {
+      if (renderer.getSelection()) {
+        renderer.clearSelection()
+      }
       const current = store.stack.at(-1)!
       current.onClose?.()
       setStore("stack", store.stack.slice(0, -1))
       evt.preventDefault()
+      evt.stopPropagation()
       refocus()
     }
   })
 
-  const renderer = useRenderer()
   let focus: Renderable | null
   function refocus() {
     setTimeout(() => {
@@ -97,12 +108,6 @@ function init() {
     }, 1)
   }
 
-  createEffect(() => {
-    if (store.stack.length === 0) {
-      allClosedEvent.emit()
-    }
-  })
-
   return {
     clear() {
       for (const item of store.stack) {
@@ -115,7 +120,10 @@ function init() {
       refocus()
     },
     replace(input: any, onClose?: () => void) {
-      if (store.stack.length === 0) focus = renderer.currentFocusedRenderable
+      if (store.stack.length === 0) {
+        focus = renderer.currentFocusedRenderable
+        focus?.blur()
+      }
       for (const item of store.stack) {
         if (item.onClose) item.onClose()
       }
@@ -133,12 +141,9 @@ function init() {
     get size() {
       return store.size
     },
-    setSize(size: "medium" | "large") {
+    setSize(size: "medium" | "large" | "xlarge") {
       setStore("size", size)
     },
-    get allClosedEvent() {
-      return allClosedEvent
-    }
   }
 }
 
@@ -148,10 +153,26 @@ const ctx = createContext<DialogContext>()
 
 export function DialogProvider(props: ParentProps) {
   const value = init()
+  const renderer = useRenderer()
+  const toast = useToast()
   return (
     <ctx.Provider value={value}>
       {props.children}
-      <box position="absolute">
+      <box
+        position="absolute"
+        zIndex={3000}
+        onMouseDown={(evt) => {
+          if (!Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) return
+          if (evt.button !== MouseButton.RIGHT) return
+
+          if (!Selection.copy(renderer, toast)) return
+          evt.preventDefault()
+          evt.stopPropagation()
+        }}
+        onMouseUp={
+          !Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT ? () => Selection.copy(renderer, toast) : undefined
+        }
+      >
         <Show when={value.stack.length}>
           <Dialog onClose={() => value.clear()} size={value.size}>
             {value.stack.at(-1)!.element}
