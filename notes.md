@@ -30,3 +30,12 @@ The main goal of this document and these work sessions is to understand more abo
 - Commands: from `config.command` in opencode.json + MCP + skills. Source: `src/command/command.ts`
 - Tools: built-in + `{tool,tools}/*.{js,ts}` from config dirs + plugin hooks (`hooks.tool{}`). Source: `src/tool/registry.ts`
 - Plugins: internal (Codex, Copilot, Gitlab, etc.) + external from `config.plugin_origins`. Source: `src/plugin/plugin.ts`, `src/plugin/index.ts`
+
+### Reasoning (2026-04-17, dev)
+
+- Reasoning effort is abstracted as **variants** — named presets (`"low"`, `"medium"`, `"high"`, etc.) mapped per-provider to the correct API params. Not standardised; each provider gets different options. Source: `src/provider/transform.ts:402` → `variants()`
+- Variant is set **per-agent** (config `variant` field) or per-session (TUI `Ctrl+T`, CLI `--variant`). Source: `src/config/agent.ts:19`, `src/session/llm.ts:126-141`
+- `variants()` returns `{}` for models matching `deepseek|minimax|glm|mistral|kimi|qwen|big-pickle` — no effort control. Source: `transform.ts:408-417`
+- For zai/zhipu providers, thinking is hardcoded always-on (`{ type: "enabled", clear_thinking: false }`). Source: `transform.ts:820-828`
+- User-defined variants in `opencode.json` (under `provider.<id>.models.<model>.variants`) are merged on top of the computed ones via `mergeDeep`. Can override the `{}` for excluded models if the underlying API supports effort params. Source: `src/provider/provider.ts:1183`
+- Thinking visibility: `/thinking` toggles `thinking_visibility` in persistent KV (`kv.json`). Default: `true` (shown). Keybind `display_thinking` defaults to `"none"` (no shortcut). Source: `src/cli/cmd/tui/routes/session/index.tsx:159`, `src/config/keybinds.ts:161`
