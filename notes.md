@@ -49,3 +49,12 @@ The main goal of this document and these work sessions is to understand more abo
 - **SSE events are global** — `/event` streams ALL bus events regardless of directory. Client-side filters as needed. Source: `src/server/instance/event.ts`
 - **TUI control routes** (`/tui/*`) let web UI remote-control an attached TUI via `TuiEvent` bus events (select-session, append-prompt, execute-command). Source: `src/server/instance/tui.ts`
 - **Systemd single-service pattern works:** `opencode serve` as user service, then `opencode attach http://localhost:4096 --dir .` from any project. No env var for directory — use shell alias. Source: analysis of attach.ts + middleware.ts
+
+### HTTP API (2026-04-21, dev)
+
+- **Known bug:** `GET /doc` (live endpoint) only shows 7 global/control-plane routes, NOT the ~96 instance-scoped routes. This is a confirmed bug: [issue #20295](https://github.com/anomalyco/opencode/issues/20295), PR [#20519](https://github.com/anomalyco/opencode/pull/20519) open. Root cause: `/doc` uses `openAPIRouteHandler(app)` where `app` is the control-plane sub-app only; `WorkspaceRouterMiddleware` handles instance routes dynamically at runtime.
+- **`/doc` still useful for schemas:** `components.schemas` has 130+ types (Session, Message, all Part types, 47 Event types, etc.) because `GlobalEvent.payload` references them transitively. So `curl -s http://localhost:4096/doc | jq '.components.schemas.Session'` works.
+- **Full spec exists at `packages/sdk/openapi.json`:** 96 paths, generated at build-time via `Server.openapi()` which builds a dummy app with `InstanceRoutes` directly mounted. Use this file (or `jq`) as the authoritative route reference: `jq '.paths | keys[]' packages/sdk/openapi.json`.
+- **Directory targeting:** instance-scoped routes use `?directory=<path>` or `x-opencode-directory` header. Example: `curl http://localhost:4096/session?directory=$PWD`.
+- **Quick discovery endpoints:** `GET /global/health` (version check), `GET /project` (list all known projects), `GET /session` (list sessions for a directory), `GET /agent`, `GET /skill`, `GET /command`, `GET /path`, `GET /vcs`.
+- **Instance route source:** `src/server/instance/index.ts` — registers sub-routers for session, agent, skill, command, path, vcs, project, pty, config, permission, question, provider, mcp, tui, sync, experimental, lsp, formatter, file.
