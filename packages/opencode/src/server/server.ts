@@ -1,16 +1,22 @@
 import { generateSpecs } from "hono-openapi"
 import { Hono } from "hono"
 import { adapter } from "#hono"
-import { MDNS } from "./mdns"
 import { lazy } from "@/util/lazy"
+import * as Log from "@opencode-ai/core/util/log"
+import { Flag } from "@opencode-ai/core/flag/flag"
+import { WorkspaceID } from "@/control-plane/schema"
+import { MDNS } from "./mdns"
 import { AuthMiddleware, CompressionMiddleware, CorsMiddleware, ErrorMiddleware, LoggerMiddleware } from "./middleware"
 import { FenceMiddleware } from "./fence"
-import { InstanceRoutes } from "./instance"
 import { initProjectors } from "./projectors"
-import { Log } from "@/util"
-import { Flag } from "@/flag/flag"
-import { ControlPlaneRoutes } from "./control"
-import { UIRoutes } from "./ui"
+import { InstanceRoutes } from "./routes/instance"
+import { ControlPlaneRoutes } from "./routes/control"
+import { UIRoutes } from "./routes/ui"
+import { GlobalRoutes } from "./routes/global"
+import { WorkspaceRouterMiddleware } from "./workspace"
+import { InstanceMiddleware } from "./routes/instance/middleware"
+import { WorkspaceRoutes } from "./routes/control/workspace"
+import { ExperimentalHttpApiServer } from "./routes/instance/httpapi/server"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -26,35 +32,66 @@ export type Listener = {
   stop: (close?: boolean) => Promise<void>
 }
 
-export const Default = lazy(() => create({}))
+type ServerApp = {
+  fetch(request: Request): Response | Promise<Response>
+  request(input: string | URL | Request, init?: RequestInit): Response | Promise<Response>
+}
+
+const DefaultHono = lazy(() => createHono({}))
+const DefaultHttpApi = lazy(() => createHttpApi())
+export const Default = () => (Flag.OPENCODE_EXPERIMENTAL_HTTPAPI ? DefaultHttpApi() : DefaultHono())
 
 function create(opts: { cors?: string[] }) {
+  if (Flag.OPENCODE_EXPERIMENTAL_HTTPAPI) return createHttpApi()
+  return createHono(opts)
+}
+
+function createHttpApi() {
+  const handler = ExperimentalHttpApiServer.webHandler().handler
+  const app: ServerApp = {
+    fetch: (request: Request) => handler(request, ExperimentalHttpApiServer.context),
+    request(input, init) {
+      return app.fetch(input instanceof Request ? input : new Request(new URL(input, "http://localhost"), init))
+    },
+  }
+  return {
+    app,
+    runtime: adapter.createFetch(app),
+  }
+}
+
+function createHono(opts: { cors?: string[] }) {
   const app = new Hono()
+    .onError(ErrorMiddleware)
+    .use(AuthMiddleware)
+    .use(LoggerMiddleware)
+    .use(CompressionMiddleware)
+    .use(CorsMiddleware(opts))
+    .route("/global", GlobalRoutes())
+
   const runtime = adapter.create(app)
 
   if (Flag.OPENCODE_WORKSPACE_ID) {
     return {
       app: app
-        .onError(ErrorMiddleware)
-        .use(AuthMiddleware)
-        .use(LoggerMiddleware)
-        .use(CompressionMiddleware)
-        .use(CorsMiddleware(opts))
+        .use(InstanceMiddleware(Flag.OPENCODE_WORKSPACE_ID ? WorkspaceID.make(Flag.OPENCODE_WORKSPACE_ID) : undefined))
         .use(FenceMiddleware)
-        .route("/", ControlPlaneRoutes())
         .route("/", InstanceRoutes(runtime.upgradeWebSocket)),
       runtime,
     }
   }
 
+  const workspaceApp = new Hono()
+  const workspaceLegacyApp = new Hono()
+    .use(InstanceMiddleware())
+    .route("/experimental/workspace", WorkspaceRoutes())
+    .use(WorkspaceRouterMiddleware(runtime.upgradeWebSocket))
+  workspaceApp.route("/", workspaceLegacyApp)
+
   return {
     app: app
-      .onError(ErrorMiddleware)
-      .use(AuthMiddleware)
-      .use(LoggerMiddleware)
-      .use(CompressionMiddleware)
-      .use(CorsMiddleware(opts))
       .route("/", ControlPlaneRoutes())
+      .route("/", workspaceApp)
       .route("/", InstanceRoutes(runtime.upgradeWebSocket))
       .route("/", UIRoutes()),
     runtime,
@@ -66,7 +103,7 @@ export async function openapi() {
   // hono-openapi can see describeRoute metadata (`.route()` wraps
   // handlers when the sub-app has a custom errorHandler, which
   // strips the metadata symbol).
-  const { app } = create({})
+  const { app } = createHono({})
   const result = await generateSpecs(app, {
     documentation: {
       info: {
