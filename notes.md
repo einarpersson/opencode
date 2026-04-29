@@ -29,7 +29,7 @@ The main goal of this document and these work sessions is to understand more abo
 - Skills: SKILL.md files scanned from multiple paths. Source: `src/skill/skill.ts`
 - Commands: from `config.command` in opencode.json + MCP + skills. Source: `src/command/command.ts`
 - Tools: built-in + `{tool,tools}/*.{js,ts}` from config dirs + plugin hooks (`hooks.tool{}`). Source: `src/tool/registry.ts`
-- Plugins: internal (Codex, Copilot, Gitlab, etc.) + external from `config.plugin_origins`. Source: `src/plugin/plugin.ts`, `src/plugin/index.ts`
+- Plugins: internal (Codex, Copilot, Gitlab, etc.) + external from `config.plugin_origins`. Source: `src/plugin/index.ts`
 
 ### Reasoning (2026-04-17, dev)
 
@@ -58,3 +58,27 @@ The main goal of this document and these work sessions is to understand more abo
 - **Directory targeting:** instance-scoped routes use `?directory=<path>` or `x-opencode-directory` header. Example: `curl http://localhost:4096/session?directory=$PWD`.
 - **Quick discovery endpoints:** `GET /global/health` (version check), `GET /project` (list all known projects), `GET /session` (list sessions for a directory), `GET /agent`, `GET /skill`, `GET /command`, `GET /path`, `GET /vcs`.
 - **Instance route source:** `src/server/instance/index.ts` — registers sub-routers for session, agent, skill, command, path, vcs, project, pty, config, permission, question, provider, mcp, tui, sync, experimental, lsp, formatter, file.
+
+### Task tool & subagents (2026-04-29, dev)
+
+- **Task tool** (`src/tool/task.ts`) is a built-in tool that spawns a child session running a subagent. Parameters: `subagent_type` (agent name), `prompt` (instructions for subagent), `description` (3-5 word label → becomes session title), optional `task_id` (resume existing subagent session). Source: `src/tool/task.ts`
+- **Agent mode** determines role: `"primary"` (TUI-facing only), `"subagent"` (invoked via task tool only), `"all"` (both). Source: `src/config/agent.ts:29`, `src/agent/agent.ts:31`
+- **Subagent discovery:** the task tool's description is dynamically built at runtime — `describeTask()` (registry.ts:254) lists all agents where `mode !== "primary"` and not denied by the calling agent's permissions. The LLM sees them as `- name: description` entries appended to the static tool description. Source: `src/tool/registry.ts:254-267,294-300`
+- **Permission model for subagents:** flat ruleset evaluated with `findLast` (last match wins). Default action if no rule matches: `"ask"`. `Permission.merge` just concatenates arrays. Source: `src/permission/evaluate.ts`, `src/permission/index.ts:292-308`
+- **Built-in subagents:** `explore` (read-only codebase search, prompt in `src/agent/prompt/explore.txt`) and `general` (full tools minus todowrite, no custom prompt). Source: `src/agent/agent.ts:147-186`
+- **Permission hierarchy per built-in agent:** `Permission.merge(defaults, agent_specific, user_config)`. `defaults` has `"*": "allow"`. `explore` overrides with `"*": "deny"` then selectively allows read-only tools. `general` only denies `todowrite`. `user_config` (global `permission` from opencode.json) is always the final layer = highest priority. Source: `src/agent/agent.ts:87-106,147-186`
+- **New custom tools:** automatically allowed for `general` (inherits `"*": "allow"`), automatically denied for `explore` (blanket `"*": "deny"`). No manual config needed. Source: analysis of permission rulesets in agent.ts
+- **Subagent restrictions at invocation time:** task tool also adds session-level deny rules — denies `task` if subagent lacks task permission, denies `todowrite` if subagent lacks it, strips `experimental.primary_tools`. Source: `src/tool/task.ts:60-96`
+- **User-defined subagents:** `{agent,agents}/**/*.md` files with `mode: subagent` in frontmatter. Automatically appear in task tool description. Source: `src/config/agent.ts:101-136`
+
+### Plugin & SDK cheat sheet (2026-04-29, dev)
+
+- **Plugin config:** `~/.config/opencode.jsonc` (global) or `opencode.json` in project root. Plugin origins go in `plugin_origins` array.
+- **Local plugins:** `~/.config/opencode/plugin/*.ts` (or `plugins/`). Auto-discovered, no config needed. Also `{plugin,plugins}/*.{ts,js}` in project config dirs.
+- **Plugin types:** `import type { Plugin } from "@opencode-ai/plugin"`. The `Plugin` type is `(input: PluginInput) => Promise<Hooks>`.
+- **Plugin `client` is v1 SDK:** plugins receive `client` from `createOpencodeClient()` imported from `@opencode-ai/sdk` (NOT `/v2`). API surface: `client.tool.ids()`, `client.tui.showToast()`, `client.config.get()`, `client.instance.dispose()`, etc. Source: `packages/opencode/src/plugin/index.ts:11,122`
+- **v1 vs v2 SDK:** `@opencode-ai/sdk` (v1) has flat namespaces (`client.tool`, `client.tui`). `@opencode-ai/sdk/v2` has `client.experimental.tool` etc. Internally opencode uses v2 in some places (CLI run.ts, acp.ts). Plugins always get v1.
+- **SDK API reference:** for plugins, check `packages/sdk/js/src/gen/sdk.gen.ts` (v1 classes). For internal opencode code, check `packages/sdk/js/src/v2/gen/sdk.gen.ts`.
+- **Registering commands:** in `config` hook, set `opencodeConfig.command["name"] = { template: "", description: "..." }`. Hook into execution via `command.execute.before`.
+- **Toast API (v1):** `client.tui.showToast({ body: { title, message, variant, duration } })`.
+- **Tools ≠ permissions:** tools are registered capabilities. Permissions are rules (allow/deny/ask) that gate tool usage per-agent. `client.tool.ids()` returns all registered tools, NOT filtered by agent permissions.
