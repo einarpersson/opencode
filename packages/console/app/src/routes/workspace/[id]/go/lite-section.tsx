@@ -15,6 +15,7 @@ import { useI18n } from "~/context/i18n"
 import { useLanguage } from "~/context/language"
 import { formError } from "~/lib/form-error"
 import { formatResetTime, liteResetTimeKeys } from "~/lib/format-reset-time"
+import { createReferralFromCookie } from "~/lib/referral-invite"
 
 import { IconAlipay, IconUpi } from "~/component/icon"
 
@@ -68,20 +69,20 @@ export const queryLiteSubscription = query(async (workspaceID: string) => {
   }, workspaceID)
 }, "lite.subscription.get")
 
+type LiteSubscription = Awaited<ReturnType<typeof queryLiteSubscription>>
+
 const createLiteCheckoutUrl = action(
   async (workspaceID: string, successUrl: string, cancelUrl: string, method?: "alipay" | "upi") => {
     "use server"
     return json(
-      await withActor(
-        () =>
-          Billing.generateLiteCheckoutUrl({ successUrl, cancelUrl, method })
-            .then((data) => ({ error: undefined, data }))
-            .catch((e) => ({
-              error: e.message as string,
-              data: undefined,
-            })),
-        workspaceID,
-      ),
+      await withActor(async () => {
+        const data = await Billing.generateLiteCheckoutUrl({ successUrl, cancelUrl, method })
+        await createReferralFromCookie()
+        return { error: undefined, data }
+      }, workspaceID).catch((e) => ({
+        error: e.message as string,
+        data: undefined,
+      })),
       { revalidate: [queryBillingInfo.key, queryLiteSubscription.key] },
     )
   },
@@ -147,13 +148,12 @@ function LiteUsageItem(props: { label: string; usage: { usagePercent: number; re
   )
 }
 
-export function LiteSection() {
+export function LiteSection(props: { lite: LiteSubscription | undefined }) {
   const params = useParams()
   const i18n = useI18n()
   const language = useLanguage()
   const billingInfo = createAsync(() => queryBillingInfo(params.id!))
   const isBlack = createMemo(() => billingInfo()?.subscriptionID || billingInfo()?.timeSubscriptionBooked)
-  const lite = createAsync(() => queryLiteSubscription(params.id!))
   const sessionAction = useAction(createSessionUrl)
   const sessionSubmission = useSubmission(createSessionUrl)
   const checkoutAction = useAction(createLiteCheckoutUrl)
@@ -193,7 +193,7 @@ export function LiteSection() {
           <p data-slot="other-message">{i18n.t("workspace.lite.black.message")}</p>
         </section>
       </Show>
-      <Show when={!isBlack() && lite() && lite()!.mine && lite()!}>
+      <Show when={!isBlack() && props.lite && props.lite.mine && props.lite}>
         {(sub) => (
           <section class={styles.root}>
             <div data-slot="section-title">
@@ -235,12 +235,12 @@ export function LiteSection() {
           </section>
         )}
       </Show>
-      <Show when={!isBlack() && lite() && !lite()!.mine}>
+      <Show when={!isBlack() && props.lite && !props.lite.mine}>
         <section class={styles.root}>
           <p data-slot="other-message">{i18n.t("workspace.lite.other.message")}</p>
         </section>
       </Show>
-      <Show when={!isBlack() && lite() === null}>
+      <Show when={!isBlack() && props.lite === null}>
         <section class={styles.root}>
           <p data-slot="promo-description">
             <For
@@ -265,8 +265,10 @@ export function LiteSection() {
             <li>MiMo-V2.5</li>
             <li>MiniMax M2.5</li>
             <li>MiniMax M2.7</li>
-            <li>Qwen3.5 Plus</li>
+            <li>MiniMax M3</li>
             <li>Qwen3.6 Plus</li>
+            <li>Qwen3.7 Plus</li>
+            <li>Qwen3.7 Max</li>
             <li>DeepSeek V4 Pro</li>
             <li>DeepSeek V4 Flash</li>
           </ul>
