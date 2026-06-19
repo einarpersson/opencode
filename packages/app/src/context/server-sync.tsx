@@ -1,11 +1,11 @@
 import type { Config, OpencodeClient, Path, Project, ProviderAuthResponse, Todo } from "@opencode-ai/sdk/v2/client"
 import { showToast } from "@/utils/toast"
 import { getFilename } from "@opencode-ai/core/util/path"
-import { batch, getOwner, onCleanup, onMount, untrack } from "solid-js"
+import { type Accessor, batch, createMemo, getOwner, onCleanup, onMount, untrack } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useLanguage } from "@/context/language"
 import type { InitError } from "../pages/error"
-import { ServerSDK, useServerSDK } from "./server-sdk"
+import { ServerSDK } from "./server-sdk"
 import {
   bootstrapDirectory,
   bootstrapGlobal,
@@ -36,6 +36,7 @@ import { ServerConnection, useServer } from "./server"
 import { retry } from "@opencode-ai/core/util/retry"
 import type { ServerScope } from "@/utils/server-scope"
 import { persisted } from "@/utils/persist"
+import { toggleMcp } from "./global-sync/mcp"
 
 type GlobalStore = {
   ready: boolean
@@ -83,8 +84,7 @@ function makeQueryOptionsApi(
 }
 export type QueryOptionsApi = ReturnType<typeof makeQueryOptionsApi>
 
-export function createServerSyncContextInner(_serverSDK?: ServerSDK) {
-  const serverSDK: ServerSDK = _serverSDK ?? useServerSDK()
+export function createServerSyncContextInner(serverSDK: ServerSDK) {
   const language = useLanguage()
   const owner = getOwner()
   if (!owner) throw new Error("ServerSync must be created within owner")
@@ -247,17 +247,21 @@ export function createServerSyncContextInner(_serverSDK?: ServerSDK) {
     },
   })
 
-  async function loadSessions(directory: string) {
+  async function loadSessions(directory: string, options?: { limit?: number }) {
     const key = directoryKey(directory)
     const pending = sessionLoads.get(key)
-    if (pending) return pending
+    if (pending) {
+      await pending
+      return loadSessions(directory, options)
+    }
 
     children.pin(key)
     const [store, setStore] = children.child(directory, { bootstrap: false })
     const meta = sessionMeta.get(key)
-    if (meta && meta.limit >= store.limit) {
+    const retainedLimit = Math.max(store.limit, options?.limit ?? 0, meta?.limit ?? 0)
+    if (meta && meta.limit >= retainedLimit) {
       const next = trimSessions(store.session, {
-        limit: store.limit,
+        limit: retainedLimit,
         permission: store.permission,
       })
       if (next.length !== store.session.length) {
@@ -268,7 +272,7 @@ export function createServerSyncContextInner(_serverSDK?: ServerSDK) {
       return
     }
 
-    const limit = Math.max(store.limit + SESSION_RECENT_LIMIT, SESSION_RECENT_LIMIT)
+    const limit = Math.max(retainedLimit + SESSION_RECENT_LIMIT, SESSION_RECENT_LIMIT)
     const promise = queryClient
       .fetchQuery({
         ...queryOptionsApi.sessions(key),
@@ -283,7 +287,7 @@ export function createServerSyncContextInner(_serverSDK?: ServerSDK) {
                 .filter((s) => !!s?.id)
                 .filter((s) => !s.time?.archived)
                 .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-              const limit = store.limit
+              const limit = Math.max(store.limit, options?.limit ?? 0, sessionMeta.get(key)?.limit ?? 0)
               const childSessions = store.session.filter((s) => !!s.parentID)
               const sessions = trimSessions([...nonArchived, ...childSessions], {
                 limit,
@@ -400,6 +404,7 @@ export function createServerSyncContextInner(_serverSDK?: ServerSDK) {
       setStore,
       push: queue.push,
       setSessionTodo,
+      retainedLimit: sessionMeta.get(key)?.limit,
       vcsCache: children.vcsCache.get(key),
       loadLsp: () => {
         void queryClient.fetchQuery(queryOptionsApi.lsp(key))
@@ -476,36 +481,62 @@ export function createServerSyncContextInner(_serverSDK?: ServerSDK) {
     todo: {
       set: setSessionTodo,
     },
+    mcp: {
+      toggle: async (directory: string, name: string) => {
+        const key = directoryKey(directory)
+        const sdk = sdkFor(key)
+        const status = children.child(key, { bootstrap: false })[0].mcp[name].status
+        await toggleMcp({
+          status,
+          connect: async () => {
+            await sdk.mcp.connect({ name })
+          },
+          disconnect: async () => {
+            await sdk.mcp.disconnect({ name })
+          },
+          authenticate: async () => {
+            await sdk.mcp.auth.authenticate({ name })
+          },
+          refresh: async () => {
+            await queryClient.refetchQueries(queryOptionsApi.mcp(key))
+          },
+        })
+      },
+    },
   }
 }
 
-export function createServerSyncContext(_serverSDK?: ServerSDK) {
-  const inner = createServerSyncContextInner(_serverSDK)
+export function createServerSyncContext(serverSDK: ServerSDK) {
+  const inner = createServerSyncContextInner(serverSDK)
   return Object.assign(inner, {
     createDirSyncContext: createRefCountMap(
-      (dir) => createDirSyncContext(dir, inner, _serverSDK),
+      (dir) => createDirSyncContext(dir, inner, serverSDK),
       (dir) => inner.disableMcp(dir),
       directoryKey,
     ),
   })
 }
 
+export type ServerSync = ReturnType<typeof createServerSyncContext>
+
 export const { use: useServerSync, provider: ServerSyncProvider } = createSimpleContext({
   name: "ServerSync",
-  gate: false,
-  init: (props: { server?: ServerConnection.Any }) => {
+  // Returns an accessor so the resolved server can change reactively without
+  // re-instantiating the subtree (mirrors useServerSDK).
+  init: (props: { server?: Accessor<ServerConnection.Any | undefined> }) => {
     const global = useGlobal()
     const language = useLanguage()
     const server = useServer()
 
-    const conn = props.server ?? server.current
-    if (!conn) throw new Error(language.t("error.serverSDK.noServerAvailable"))
-    const ctx = global.createServerCtx(conn)
-
-    return ctx.sync
+    return createMemo<ServerSync>(() => {
+      const conn = props.server?.() ?? server.current
+      if (!conn) throw new Error(language.t("error.serverSDK.noServerAvailable"))
+      return global.createServerCtx(conn).sync
+    })
   },
 })
 
 export function useQueryOptions() {
-  return useServerSync().queryOptions
+  const sync = useServerSync()
+  return createMemo(() => sync().queryOptions)
 }
