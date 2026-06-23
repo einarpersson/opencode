@@ -9,11 +9,13 @@ import * as LSPServer from "./server"
 import { Config } from "@/config/config"
 import { Process } from "@/util/process"
 import { spawn as lspspawn } from "./launch"
+import { setEnvDelta } from "./env-delta"
 import { Effect, Layer, Context, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { Plugin } from "@/plugin"
 
 export const Event = {
   Updated: EventV2.define({ type: "lsp.updated", schema: {} }),
@@ -143,6 +145,7 @@ export const layer = Layer.effect(
     const config = yield* Config.Service
     const flags = yield* RuntimeFlags.Service
     const events = yield* EventV2Bridge.Service
+    const plugin = yield* Plugin.Service
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("LSP.state")(function* (ctx) {
@@ -211,6 +214,25 @@ export const layer = Layer.effect(
       const ctx = yield* InstanceState.context
       if (!containsPath(file, ctx)) return [] as LSPClient.Info[]
       const s = yield* InstanceState.get(state)
+      const extension = path.parse(file).ext || file
+
+      // The "lsp.env" trigger is an Effect, so it must run before the async
+      // scheduling block. The delta is keyed by root (cfg.cwd === root). The
+      // plugin is expected to cache; we collect every candidate root.
+      const roots = yield* Effect.promise(async () => {
+        const set = new Set<string>()
+        for (const server of Object.values(s.servers)) {
+          if (server.extensions.length && !server.extensions.includes(extension)) continue
+          const root = await server.root(file, ctx)
+          if (root) set.add(root)
+        }
+        return [...set]
+      })
+      for (const root of roots) {
+        const result = yield* plugin.trigger("lsp.env", { cwd: root }, { env: {} as Record<string, string> })
+        setEnvDelta(root, result.env)
+      }
+
       const clients = yield* Effect.promise(async () => {
         const extension = path.parse(file).ext || file
         const result: LSPClient.Info[] = []
@@ -502,10 +524,11 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Config.defaultLayer),
   Layer.provide(RuntimeFlags.defaultLayer),
   Layer.provide(EventV2Bridge.defaultLayer),
+  Layer.provide(Plugin.defaultLayer),
 )
 
 export * as Diagnostic from "./diagnostic"
 
-export const node = LayerNode.make(layer, [Config.node, RuntimeFlags.node, FSUtil.node, EventV2Bridge.node])
+export const node = LayerNode.make(layer, [Config.node, RuntimeFlags.node, FSUtil.node, EventV2Bridge.node, Plugin.node])
 
 export * as LSP from "./lsp"

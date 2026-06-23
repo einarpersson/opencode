@@ -4,6 +4,7 @@ import { Deferred, Effect, Layer } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { Plugin } from "@/plugin"
 import { LSP } from "@/lsp/lsp"
 import * as LSPServer from "@/lsp/server"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -14,6 +15,7 @@ const lspLayer = (flags: Parameters<typeof RuntimeFlags.layer>[0] = {}) =>
   LSP.layer.pipe(
     Layer.provide(Config.defaultLayer),
     Layer.provide(RuntimeFlags.layer(flags)),
+    Layer.provide(Plugin.defaultLayer),
     Layer.provideMerge(EventV2Bridge.defaultLayer),
   )
 
