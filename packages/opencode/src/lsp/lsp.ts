@@ -217,14 +217,19 @@ export const layer = Layer.effect(
       const extension = path.parse(file).ext || file
 
       // The "lsp.env" trigger is an Effect, so it must run before the async
-      // scheduling block. The delta is keyed by root (cfg.cwd === root). The
-      // plugin is expected to cache; we collect every candidate root.
+      // scheduling block. Only fire for roots that will actually spawn, so
+      // warm/broken/inflight servers don't pay for a hook invocation.
       const roots = yield* Effect.promise(async () => {
         const set = new Set<string>()
         for (const server of Object.values(s.servers)) {
           if (server.extensions.length && !server.extensions.includes(extension)) continue
           const root = await server.root(file, ctx)
-          if (root) set.add(root)
+          if (!root) continue
+          const key = root + server.id
+          if (s.broken.has(key)) continue
+          if (s.clients.find((x) => x.root === root && x.serverID === server.id)) continue
+          if (s.spawning.get(key)) continue
+          set.add(root)
         }
         return [...set]
       })
