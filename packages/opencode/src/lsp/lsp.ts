@@ -226,16 +226,29 @@ export const layer = Layer.effect(
           const root = await server.root(file, ctx)
           if (!root) continue
           const key = root + server.id
-          if (s.broken.has(key)) continue
-          if (s.clients.find((x) => x.root === root && x.serverID === server.id)) continue
-          if (s.spawning.get(key)) continue
+          if (s.broken.has(key)) {
+            process.stderr.write(`[lsp.env-fix] skip-broken root=${root} server=${server.id}\n`)
+            continue
+          }
+          if (s.clients.find((x) => x.root === root && x.serverID === server.id)) {
+            process.stderr.write(`[lsp.env-fix] skip-warm root=${root} server=${server.id}\n`)
+            continue
+          }
+          if (s.spawning.get(key)) {
+            process.stderr.write(`[lsp.env-fix] skip-inflight root=${root} server=${server.id}\n`)
+            continue
+          }
           set.add(root)
         }
         return [...set]
       })
+      process.stderr.write(`[lsp.env-fix] pre-fire roots=${roots.length} file=${file}\n`)
       for (const root of roots) {
         const result = yield* plugin.trigger("lsp.env", { cwd: root }, { env: {} as Record<string, string> })
         setEnvDelta(root, result.env)
+        process.stderr.write(
+          `[lsp.env-fix] post-fire root=${root} envKeys=${Object.keys(result.env).join(",") || "(empty)"} venv=${result.env.VIRTUAL_ENV ?? "undefined"} pathHead=${(result.env.PATH ?? "").split(":")[0] || "(empty)"}\n`,
+        )
       }
 
       const clients = yield* Effect.promise(async () => {

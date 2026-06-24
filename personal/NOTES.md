@@ -14,6 +14,10 @@ You may add small bits of information to a cheat sheet below in this document.
 
 The main goal of this document and these work sessions is to understand more about how opencode works so that I can adapt it to my needs either through my workflows, via plugins/SDK or via forking (last resort).
 
+## Modifications
+
+2026-06-23: Added a `lsp.env` hook (similar to builtin `shell.env` hook) in order to be able to load direnv variables on lsp startup - necessary for uv/venv. See `personal/MODIFICATION_LSP.md`
+
 ## Cheat sheet
 
 ### Instance state model (2026-04-16, 11b26a9)
@@ -82,3 +86,4 @@ The main goal of this document and these work sessions is to understand more abo
 - **Registering commands:** in `config` hook, set `opencodeConfig.command["name"] = { template: "", description: "..." }`. Hook into execution via `command.execute.before`.
 - **Toast API (v1):** `client.tui.showToast({ body: { title, message, variant, duration } })`.
 - **Tools ≠ permissions:** tools are registered capabilities. Permissions are rules (allow/deny/ask) that gate tool usage per-agent. `client.tool.ids()` returns all registered tools, NOT filtered by agent permissions.
+
