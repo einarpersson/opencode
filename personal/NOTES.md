@@ -18,6 +18,12 @@ The main goal of this document and these work sessions is to understand more abo
 
 2026-06-23: Added a `lsp.env` hook (similar to builtin `shell.env` hook) in order to be able to load direnv variables on lsp startup - necessary for uv/venv. See `personal/MODIFICATION_LSP.md`
 
+### Pushing the personal branch to a fork (2026-07-28, 8d06c2db8)
+
+- `origin` points to the official `anomalyco/opencode` (no write access). Add a fork remote: `git remote add fork git@github.com:einarpersson/opencode.git` (fork already existed, parented to `anomalyco`).
+- Push with: `git push -u fork personal`. Actions are disabled on forks by default — workflows will NOT run unless you manually enable them in the Actions tab.
+- The husky `pre-push` hook runs `bun turbo typecheck`, which currently fails with `Bun cannot run json files directly` on `turbo.json`. This is a repo-wide bug, unrelated to branch contents. Bypass with `--no-verify` when pushing to the personal fork.
+
 ## Cheat sheet
 
 ### Instance state model (2026-04-16, 11b26a9)
