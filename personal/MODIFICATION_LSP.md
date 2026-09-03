@@ -51,7 +51,7 @@ edit packages/opencode/test/lsp/index.test.ts     (+2 lines)
 4. **`packages/opencode/src/lsp/lsp.ts`** —
    - New imports: `setEnvDelta` from `./env-delta`, `Plugin` from `@/plugin`.
    - At the `layer`'s `Effect.gen` top: `const plugin = yield* Plugin.Service` right after the other service captures.
-   - `defaultLayer` and `node` LayerNode deps both append `Plugin` (`.defaultLayer` / `.node`) so `Plugin.Service` resolves when the LSP layer runs.
+   - The `node` LayerNode deps append `Plugin.node` (`deps: [Config.node, RuntimeFlags.node, FSUtil.node, EventV2Bridge.node, Plugin.node]`) so `Plugin.Service` resolves when the LSP layer runs. (`defaultLayer` no longer exists; upstream removed `defaultLayer` exports repo-wide and `LayerNode.make` now takes an object argument.)
    - In `getClients = Effect.fnUntraced(function*(file))`, **before** the `Effect.promise(async () => {...})` scheduling block: precompute the set of roots that will spawn next (filter extensions, call `await server.root(file, ctx)`, skip entries already in `s.broken` / `s.clients` / `s.spawning`), then for each unique root `yield* plugin.trigger("lsp.env", { cwd: root }, { env: {} })` and `setEnvDelta(root, result.env)`.
 
 ### Why the trigger is fired in two phases

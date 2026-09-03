@@ -18,6 +18,8 @@ The main goal of this document and these work sessions is to understand more abo
 
 2026-06-23: Added a `lsp.env` hook (similar to builtin `shell.env` hook) in order to be able to load direnv variables on lsp startup - necessary for uv/venv. See `personal/MODIFICATION_LSP.md`
 
+2026-09-03: Merged `dev` (d8eb3b80fb) into `personal`. Conflicts only in LSP wiring: upstream changed `LayerNode.make` to object form and removed `defaultLayer` exports repo-wide. Re-added `Plugin.node` to `LSP.node` deps and the test layer; `lsp.env` feature logic merged cleanly. Typecheck + LSP tests (58 pass) verified.
+
 ### Pushing the personal branch to a fork (2026-07-28, 8d06c2db8)
 
 - `origin` points to the official `anomalyco/opencode` (no write access). Add a fork remote: `git remote add fork git@github.com:einarpersson/opencode.git` (fork already existed, parented to `anomalyco`).

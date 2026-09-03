@@ -1,8 +1,10 @@
+import { Client } from "@planetscale/database"
 import { Effect } from "effect"
-import { DatabaseError } from "../database"
-import { GeoStatRepo, type GeoStatMetric } from "./geo"
-import { ModelStatRepo, type ModelStatMetric } from "./model"
-import { ProviderStatRepo, type ProviderStatMetric } from "./provider"
+import { Resource } from "sst/resource"
+import type { ModelStatMetric } from "./model"
+import { statProvider } from "./model-normalization"
+import { isMissingRetentionTable } from "./retention"
+import { DATA_SITE_TIERS, normalizeTier } from "./stat"
 
 export type UsageProduct = "All Users" | "Zen" | "Go" | "Enterprise"
 export type TokenProduct = "Zen" | "Go" | "Enterprise"
@@ -20,8 +22,17 @@ export type LeaderboardEntry = {
 export type TokenCostEntry = { model: string; total: number; input: number; output: number; cached: number }
 export type CacheRatioEntry = { model: string; ratio: number; cached: number; uncached: number; total: number }
 export type SessionCostEntry = { model: string; cost: number; tokens: number }
+export type RetentionEntry = {
+  model: string
+  provider: string
+  author: string
+  rate: number
+  eligibleUserWeeks: number
+  retainedUserWeeks: number
+  rank: number | null
+}
 export type CountryEntry = { country: string; continent: string; tokens: number; share: number; rank: number }
-export type ModelUsagePoint = { date: string; tokens: number; sessions: number; cost: number }
+export type ModelUsagePoint = { date: string; tokens: number; users: number; sessions: number; cost: number }
 export type ModelMixEntry = { label: string; tokens: number; share: number }
 export type ModelPeerEntry = {
   model: string
@@ -51,8 +62,10 @@ export type StatsModelData = {
   totalModels: number
   tokenShare: number
   tokenChange: number
+  weeklyRetention: RetentionEntry | null
   totals: {
     sessions: number
+    uniqueUsers: number
     tokens: number
     cost: number
     tokensPerSession: number
@@ -62,7 +75,7 @@ export type StatsModelData = {
   }
   usage: ModelUsagePoint[]
   tokenMix: ModelMixEntry[]
-  country: Record<UsageRange, CountryEntry[]>
+  country: CountryEntry[]
   peers: ModelPeerEntry[]
 }
 export type StatsLabData = {
@@ -79,23 +92,63 @@ export type StatsLabData = {
   usage: ModelUsagePoint[]
   models: LabUsageModelEntry[]
 }
+export type StatsModelComparisonEntry = {
+  updatedAt: string | null
+  model: string
+  slug: string
+  provider: string
+  author: string
+  rank: number | null
+  previousRank: number | null
+  totalModels: number
+  tokenShare: number
+  tokenChange: number
+  weeklyRetention: RetentionEntry | null
+  totals: StatsModelData["totals"]
+  usage: ModelUsagePoint[]
+}
+export type StatsModelComparisonInput = {
+  provider: string
+  model: string
+}
+export type StatsModelComparisonData = {
+  updatedAt: string | null
+  models: (StatsModelComparisonEntry | null)[]
+}
 export type StatsHomeData = {
   updatedAt: string | null
   usage: Record<UsageProduct, Record<UsageRange, UsagePoint[]>>
+  users: Record<UsageProduct, Record<UsageRange, UsagePoint[]>>
   leaderboard: Record<UsageProduct, Record<UsageRange, LeaderboardEntry[]>>
   market: Record<UsageRange, MarketDay[]>
   tokenCost: Record<TokenProduct, TokenCostEntry[]>
   cacheRatio: Record<TokenProduct, CacheRatioEntry[]>
   sessionCost: Record<TokenProduct, SessionCostEntry[]>
-  country: Record<UsageRange, CountryEntry[]>
+  retention: RetentionEntry[]
+  country: CountryEntry[]
+}
+
+export class StatsDataError extends Error {
+  override name = "StatsDataError"
+
+  constructor(readonly cause: unknown) {
+    super("Failed to load stats data")
+  }
 }
 
 const DAY_MS = 86_400_000
 const TOKEN_SCALE = 1_000_000
 const DOLLARS_PER_MICROCENT = 1 / 100_000_000
 const METRIC_MODEL_LIMIT = 10
+const RETENTION_MODEL_LIMIT = 15
+const RETENTION_MIN_ELIGIBLE_USER_WEEKS = 100
+const RETENTION_COHORT_WEEKS = 7
 const TOP_MODEL_SEGMENT_LIMIT = 9
+const QUERY_CACHE_TTL_MS = 5 * 60 * 1000
+const QUERY_CACHE_MAX_ENTRIES = 256
+// Preserve the response shape while the public site presents Go and Free as one cohort.
 const SITE_PRODUCT = "Go"
+const SITE_TIER_PLACEHOLDERS = DATA_SITE_TIERS.map(() => "?").join(", ")
 const LEADERBOARD_CHANGE_MIN_MULTIPLE = 10
 const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"] as const
 
@@ -103,13 +156,19 @@ type StatMetricRow = Omit<ModelStatMetric, "updatedAt"> & {
   periodStart: number
   updatedAt: number
 }
-type ProviderMetricRow = Omit<ProviderStatMetric, "updatedAt"> & {
-  periodStart: number
+type CountryTotalRow = {
+  country: string
+  continent: string
+  tokens: number
   updatedAt: number
 }
-type GeoMetricRow = Omit<GeoStatMetric, "updatedAt"> & {
-  periodStart: number
+export type RetentionMetricRow = {
+  cohortDate: string
   updatedAt: number
+  provider: string
+  model: string
+  eligibleUsers: number
+  retainedUsers: number
 }
 
 type DateWindow = { start: number; end: number; previousStart: number; previousEnd: number }
@@ -118,6 +177,7 @@ type ModelAggregate = {
   model: string
   provider: string
   sessions: number
+  uniqueUsers: number
   inputTokens: number
   outputTokens: number
   reasoningTokens: number
@@ -128,64 +188,207 @@ type ModelAggregate = {
   totalCostMicrocents: number
 }
 
-export const getStatsHomeData: () => Effect.Effect<
-  StatsHomeData,
-  DatabaseError,
-  ModelStatRepo | ProviderStatRepo | GeoStatRepo
-> = Effect.fn("StatsHome.getData")(function* () {
-  const modelStats = yield* ModelStatRepo
-  const providerStats = yield* ProviderStatRepo
-  const geoStats = yield* GeoStatRepo
-  const [modelRows, providerRows, geoRows] = yield* Effect.all(
-    [modelStats.listDaily(), providerStats.listDaily(), geoStats.listDaily()],
-    { concurrency: "unbounded" },
-  )
-  return buildStatsHomeData(modelRows, providerRows, geoRows)
-})
+type RawRow = Record<string, unknown>
+type CachedQuery = { expiresAt: number; value: Promise<RawRow[]> }
 
-export const getStatsModelData: (
+const queryCache = new Map<string, CachedQuery>()
+
+export function getStatsHomeData(): Effect.Effect<StatsHomeData, StatsDataError> {
+  return Effect.tryPromise({
+    try: async () => {
+      const [modelRows, retentionRows] = await Promise.all([listModelDaily(), listRetentionWeekly()])
+      const window = modelRowsWindow(modelRows, "2M")
+      const geoRows = window ? await listCountryTotals(window) : []
+      return buildStatsHomeData(modelRows, geoRows, retentionRows)
+    },
+    catch: (cause) => new StatsDataError(cause),
+  })
+}
+
+export function getStatsModelData(
   model: string,
   provider?: string,
-) => Effect.Effect<StatsModelData | null, DatabaseError, ModelStatRepo | GeoStatRepo> = Effect.fn("StatsModel.getData")(
-  function* (model, provider) {
-    const modelStats = yield* ModelStatRepo
-    const geoStats = yield* GeoStatRepo
-    const modelRows = yield* modelStats.listDaily()
-    const normalized = modelRows.flatMap(normalizeStatRow)
-    const resolvedModel = resolveModelName(model, normalized, provider)
-    if (!resolvedModel) return null
-    return buildStatsModelData(
-      resolvedModel,
-      modelRows,
-      yield* geoStats.listDaily({
-        model: resolvedModel,
-        provider: resolveModelProvider(resolvedModel, normalized, provider),
-      }),
-      provider,
-    )
-  },
-)
-
-export const getStatsLabData: (provider: string) => Effect.Effect<StatsLabData | null, DatabaseError, ModelStatRepo> =
-  Effect.fn("StatsLab.getData")(function* (provider) {
-    const modelStats = yield* ModelStatRepo
-    return buildStatsLabData(provider, yield* modelStats.listDaily())
+): Effect.Effect<StatsModelData | null, StatsDataError> {
+  return Effect.tryPromise({
+    try: async () => {
+      const [modelRows, retentionRows] = await Promise.all([listModelDaily(), listRetentionWeekly()])
+      const normalized = modelRows.flatMap(normalizeStatRow)
+      const resolvedModel = resolveModelName(model, normalized, provider)
+      if (!resolvedModel) return null
+      const window = modelRowsWindow(modelRows, "2M")
+      const resolvedProvider = resolveModelProvider(resolvedModel, normalized, provider)
+      return buildStatsModelData(
+        resolvedModel,
+        modelRows,
+        window ? await listCountryTotals(window, { model: resolvedModel, provider: resolvedProvider }) : [],
+        provider,
+        retentionRows,
+      )
+    },
+    catch: (cause) => new StatsDataError(cause),
   })
+}
+
+export function getStatsLabData(provider: string): Effect.Effect<StatsLabData | null, StatsDataError> {
+  return Effect.tryPromise({
+    try: async () => buildStatsLabData(provider, await listModelDaily()),
+    catch: (cause) => new StatsDataError(cause),
+  })
+}
+
+async function listModelDaily(): Promise<ModelStatMetric[]> {
+  return (
+    await queryRows(
+      `select period_key, updated_at, tier, provider, model, sessions, unique_users, input_tokens,
+    output_tokens, reasoning_tokens, cache_read_tokens, total_tokens, input_cost_microcents, output_cost_microcents,
+    total_cost_microcents from model_stat where grain = 'day' and dataset = 'zen' and client = 'all'
+    and source = 'all' and tier in (${SITE_TIER_PLACEHOLDERS}) order by period_key`,
+      DATA_SITE_TIERS,
+    )
+  ).map((row) => ({
+    periodKey: stringValue(row.period_key),
+    updatedAt: dateValue(row.updated_at),
+    tier: stringValue(row.tier),
+    provider: stringValue(row.provider),
+    model: stringValue(row.model),
+    sessions: numberValue(row.sessions),
+    uniqueUsers: numberValue(row.unique_users),
+    inputTokens: numberValue(row.input_tokens),
+    outputTokens: numberValue(row.output_tokens),
+    reasoningTokens: numberValue(row.reasoning_tokens),
+    cacheReadTokens: numberValue(row.cache_read_tokens),
+    totalTokens: numberValue(row.total_tokens),
+    inputCostMicrocents: numberValue(row.input_cost_microcents),
+    outputCostMicrocents: numberValue(row.output_cost_microcents),
+    totalCostMicrocents: numberValue(row.total_cost_microcents),
+  }))
+}
+
+async function listCountryTotals(
+  window: DateWindow,
+  opts?: { provider?: string; model?: string },
+): Promise<CountryTotalRow[]> {
+  const scope =
+    opts?.model && opts.provider
+      ? "and provider = ? and model = ?"
+      : opts?.model
+        ? "and model = ?"
+        : "and provider = 'all' and model = 'all'"
+  const params = opts?.model && opts.provider ? [opts.provider, opts.model] : opts?.model ? [opts.model] : []
+  return (
+    await queryRows(
+      `select country, max(continent) as continent, sum(total_tokens) as total_tokens, max(updated_at) as updated_at
+    from geo_stat where grain = 'day' and dataset = 'zen' and client = 'all' and source = 'all'
+    and tier in (${SITE_TIER_PLACEHOLDERS}) ${scope} and period_key >= ? and period_key < ? group by country`,
+      [...DATA_SITE_TIERS, ...params, periodKey(window.start), periodKey(window.end)],
+    )
+  ).map((row) => ({
+    updatedAt: dateValue(row.updated_at).getTime(),
+    country: stringValue(row.country) || "ZZ",
+    continent: stringValue(row.continent),
+    tokens: numberValue(row.total_tokens),
+  }))
+}
+
+async function listRetentionWeekly(): Promise<RetentionMetricRow[]> {
+  try {
+    return (
+      await queryRows(
+        `select cohort_date, updated_at, provider, model, eligible_users, retained_users
+      from model_retention where dataset = 'zen' and tier = 'Go' order by cohort_date`,
+      )
+    ).map((row) => ({
+      cohortDate: stringValue(row.cohort_date),
+      updatedAt: dateValue(row.updated_at).getTime(),
+      provider: stringValue(row.provider),
+      model: stringValue(row.model),
+      eligibleUsers: numberValue(row.eligible_users),
+      retainedUsers: numberValue(row.retained_users),
+    }))
+  } catch (cause) {
+    if (isMissingRetentionTable(cause)) return []
+    throw cause
+  }
+}
+
+async function queryRows(query: string, params: string[] = []) {
+  const key = JSON.stringify([query, params])
+  const now = Date.now()
+  const cached = queryCache.get(key)
+  if (cached && cached.expiresAt > now) return cached.value
+  if (cached) queryCache.delete(key)
+
+  const value = new Client({ url: databaseUrl() }).execute(query, params).then((result) => result.rows as RawRow[])
+  const entry = { expiresAt: now + QUERY_CACHE_TTL_MS, value }
+  queryCache.set(key, entry)
+  if (queryCache.size > QUERY_CACHE_MAX_ENTRIES) queryCache.delete(queryCache.keys().next().value!)
+
+  return value.catch((cause) => {
+    if (queryCache.get(key) === entry) queryCache.delete(key)
+    throw cause
+  })
+}
+
+function databaseUrl() {
+  return process.env.DATABASE_URL ?? Resource.StatsDatabase.url
+}
+
+function stringValue(value: unknown) {
+  return value == null ? "" : String(value)
+}
+
+function numberValue(value: unknown) {
+  return Number(value ?? 0)
+}
+
+function dateValue(value: unknown) {
+  return value instanceof Date ? value : new Date(stringValue(value))
+}
+
+export function getStatsModelsComparisonData(
+  models: readonly StatsModelComparisonInput[],
+): Effect.Effect<StatsModelComparisonData, StatsDataError> {
+  return Effect.tryPromise({
+    try: async () => {
+      const [rows, retentionRows] = await Promise.all([listModelDaily(), listRetentionWeekly()])
+      const entries = models.map((model) =>
+        toComparisonEntry(buildStatsModelData(model.model, rows, [], model.provider, retentionRows)),
+      )
+      const latest = entries
+        .map((model) => model?.updatedAt)
+        .flatMap((value) => (value ? [dateTime(value)] : []))
+        .toSorted((a, b) => b - a)[0]
+      return {
+        updatedAt: latest === undefined ? null : new Date(latest).toISOString(),
+        models: entries,
+      }
+    },
+    catch: (cause) => new StatsDataError(cause),
+  })
+}
+
+export const getStatsModelComparisonData = (
+  firstProvider: string,
+  firstModel: string,
+  secondProvider: string,
+  secondModel: string,
+) =>
+  getStatsModelsComparisonData([
+    { provider: firstProvider, model: firstModel },
+    { provider: secondProvider, model: secondModel },
+  ])
 
 function buildStatsHomeData(
   modelRows: ModelStatMetric[],
-  providerRows: ProviderStatMetric[],
-  geoRows: GeoStatMetric[],
+  countryRows: CountryTotalRow[],
+  retentionRows: RetentionMetricRow[],
 ): StatsHomeData {
   const normalized = modelRows.flatMap(normalizeStatRow)
-  const providers = providerRows.flatMap(normalizeProviderRow)
-  const geo = geoRows.flatMap(normalizeGeoRow)
-  const periods = [...normalized, ...providers, ...geo]
-  if (periods.length === 0) return emptyStatsHomeData()
+  if (normalized.length === 0) return emptyStatsHomeData()
 
-  const earliest = Math.min(...periods.map((row) => row.periodStart))
-  const latest = Math.max(...periods.map((row) => row.periodStart))
-  const latestUpdate = Math.max(...periods.map((row) => row.updatedAt))
+  const earliest = Math.min(...normalized.map((row) => row.periodStart))
+  const latest = Math.max(...normalized.map((row) => row.periodStart))
+  const latestUpdate = Math.max(...normalized.map((row) => row.updatedAt), ...countryRows.map((row) => row.updatedAt))
 
   return {
     updatedAt: new Date(latestUpdate).toISOString(),
@@ -200,10 +403,22 @@ function buildStatsHomeData(
         ),
       ),
     ),
-    leaderboard: createUsageProductRecord((product) =>
-      createRangeRecord((range) => buildLeaderboard(normalized, product, getWindow("1W", earliest, latest))),
+    users: createUsageProductRecord((product) =>
+      createRangeRecord((range) =>
+        buildUsagePoints(
+          normalized,
+          product,
+          range,
+          getWindow(range, earliest, latest),
+          getWindow("1W", earliest, latest),
+          "users",
+        ),
+      ),
     ),
-    market: createRangeRecord((range) => buildMarketShare(providers, "Go", range, getWindow(range, earliest, latest))),
+    leaderboard: createUsageProductRecord((product) =>
+      createRangeRecord((_range) => buildLeaderboard(normalized, product, getWindow("1W", earliest, latest))),
+    ),
+    market: createRangeRecord((range) => buildMarketShare(normalized, "Go", range, getWindow(range, earliest, latest))),
     tokenCost: createTokenProductRecord((product) =>
       buildTokenCost(normalized, product, getWindow("1W", earliest, latest)),
     ),
@@ -213,18 +428,21 @@ function buildStatsHomeData(
     sessionCost: createTokenProductRecord((product) =>
       buildSessionCost(normalized, product, getWindow("1W", earliest, latest)),
     ),
-    country: createRangeRecord((range) => buildCountryStats(geo, getWindow(range, earliest, latest))),
+    retention: buildRetentionEntries(retentionRows)
+      .filter((item) => item.rank !== null)
+      .slice(0, RETENTION_MODEL_LIMIT),
+    country: buildCountryStats(countryRows),
   }
 }
 
 function buildStatsModelData(
   modelParam: string,
   modelRows: ModelStatMetric[],
-  geoRows: GeoStatMetric[],
+  countryRows: CountryTotalRow[],
   providerParam?: string,
+  retentionRows: RetentionMetricRow[] = [],
 ): StatsModelData | null {
   const normalized = modelRows.flatMap(normalizeStatRow)
-  const geo = geoRows.flatMap(normalizeGeoRow)
   if (normalized.length === 0) return null
 
   const model = resolveModelName(modelParam, normalized, providerParam)
@@ -248,15 +466,16 @@ function buildStatsModelData(
   )
     .filter((item) => item.totalTokens > 0)
     .toSorted((a, b) => b.totalTokens - a.totalTokens || a.model.localeCompare(b.model))
-  const peers = aggregateByModelName(rowsForProduct(normalized, SITE_PRODUCT, window.start, window.end))
+  const windowPeers = aggregateByModelName(rowsForProduct(normalized, SITE_PRODUCT, window.start, window.end))
     .filter((item) => item.totalTokens > 0)
     .toSorted((a, b) => b.totalTokens - a.totalTokens || a.model.localeCompare(b.model))
   const rankIndex = rankPeers.findIndex((item) => item.model === model)
   const rank = rankIndex >= 0 ? rankIndex + 1 : null
   const previousRankIndex = previousRankPeers.findIndex((item) => item.model === model)
-  const peerRankIndex = peers.findIndex((item) => item.model === model)
-  const peerRank = peerRankIndex >= 0 ? peerRankIndex + 1 : 1
-  const totalTokens = peers.reduce((sum, item) => sum + item.totalTokens, 0)
+  const peerRank = rankIndex >= 0 ? rankIndex + 1 : 1
+  const totalTokens = windowPeers.reduce((sum, item) => sum + item.totalTokens, 0)
+  const peerTokens = rankPeers.reduce((sum, item) => sum + item.totalTokens, 0)
+  const weeklyRetention = buildRetentionEntries(retentionRows).find((item) => item.model === model) ?? null
 
   return {
     updatedAt: Number.isFinite(latestUpdate) ? new Date(latestUpdate).toISOString() : null,
@@ -266,11 +485,13 @@ function buildStatsModelData(
     author: formatProvider(current.provider),
     rank,
     previousRank: previousRankIndex >= 0 ? previousRankIndex + 1 : null,
-    totalModels: peers.length,
+    totalModels: windowPeers.length,
     tokenShare: totalTokens > 0 ? round((current.totalTokens / totalTokens) * 100, 2) : 0,
     tokenChange: percentChange(current.totalTokens, previous.totalTokens),
+    weeklyRetention,
     totals: {
       sessions: current.sessions,
+      uniqueUsers: current.uniqueUsers,
       tokens: current.totalTokens,
       cost: round(microcentsToDollars(current.totalCostMicrocents), 2),
       tokensPerSession: current.sessions > 0 ? Math.round(current.totalTokens / current.sessions) : 0,
@@ -284,8 +505,8 @@ function buildStatsModelData(
     },
     usage: buildModelUsage(currentRows, window, "2M"),
     tokenMix: buildModelTokenMix(current),
-    country: createRangeRecord((range) => buildCountryStats(geo, getWindow(range, earliest, latest))),
-    peers: buildModelPeers(peers, peerRank, totalTokens),
+    country: buildCountryStats(countryRows),
+    peers: buildModelPeers(rankPeers, peerRank, peerTokens),
   }
 }
 
@@ -336,17 +557,70 @@ function buildStatsLabData(providerParam: string, modelRows: ModelStatMetric[]):
   }
 }
 
+function toComparisonEntry(data: StatsModelData | null): StatsModelComparisonEntry | null {
+  if (!data) return null
+  return {
+    updatedAt: data.updatedAt,
+    model: data.model,
+    slug: data.slug,
+    provider: data.provider,
+    author: data.author,
+    rank: data.rank,
+    previousRank: data.previousRank,
+    totalModels: data.totalModels,
+    tokenShare: data.tokenShare,
+    tokenChange: data.tokenChange,
+    weeklyRetention: data.weeklyRetention,
+    totals: data.totals,
+    usage: data.usage,
+  }
+}
+
 function emptyStatsHomeData(): StatsHomeData {
   return {
     updatedAt: null,
     usage: createUsageProductRecord(() => createRangeRecord(() => [])),
+    users: createUsageProductRecord(() => createRangeRecord(() => [])),
     leaderboard: createUsageProductRecord(() => createRangeRecord(() => [])),
     market: createRangeRecord(() => []),
     tokenCost: createTokenProductRecord(() => []),
     cacheRatio: createTokenProductRecord(() => []),
     sessionCost: createTokenProductRecord(() => []),
-    country: createRangeRecord(() => []),
+    retention: [],
+    country: [],
   }
+}
+
+export function buildRetentionEntries(rows: RetentionMetricRow[]): RetentionEntry[] {
+  const cohortDates = [...new Set(rows.map((row) => row.cohortDate))].toSorted().slice(-RETENTION_COHORT_WEEKS)
+  const aggregate = rows
+    .filter((row) => cohortDates.includes(row.cohortDate))
+    .reduce<Map<string, Omit<RetentionEntry, "author" | "rate" | "rank">>>((result, row) => {
+      const current = result.get(row.model)
+      result.set(row.model, {
+        model: row.model,
+        provider: current?.provider ?? row.provider,
+        eligibleUserWeeks: (current?.eligibleUserWeeks ?? 0) + row.eligibleUsers,
+        retainedUserWeeks: (current?.retainedUserWeeks ?? 0) + row.retainedUsers,
+      })
+      return result
+    }, new Map())
+  const entries = [...aggregate.values()].map((item) => ({
+    ...item,
+    author: formatProvider(item.provider),
+    rate: item.eligibleUserWeeks > 0 ? round((item.retainedUserWeeks / item.eligibleUserWeeks) * 100, 1) : 0,
+  }))
+  const ranks = new Map(
+    entries
+      .filter((item) => item.eligibleUserWeeks >= RETENTION_MIN_ELIGIBLE_USER_WEEKS)
+      .toSorted(
+        (a, b) => b.rate - a.rate || b.eligibleUserWeeks - a.eligibleUserWeeks || a.model.localeCompare(b.model),
+      )
+      .map((item, index) => [item.model, index + 1]),
+  )
+  return entries
+    .map((item) => ({ ...item, rank: ranks.get(item.model) ?? null }))
+    .toSorted((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER))
 }
 
 function buildUsagePoints(
@@ -355,26 +629,37 @@ function buildUsagePoints(
   range: UsageRange,
   window: DateWindow,
   rankWindow: DateWindow,
+  metric: "tokens" | "users" = "tokens",
 ) {
   const modelOrder = aggregateByModelName(rowsForProduct(rows, product, rankWindow.start, rankWindow.end))
-    .toSorted((a, b) => b.totalTokens - a.totalTokens)
+    .toSorted((a, b) => modelUsageValue(b, metric) - modelUsageValue(a, metric))
     .slice(0, TOP_MODEL_SEGMENT_LIMIT)
     .map((item) => item.model)
 
   return createBuckets(window, range).map((bucket) => {
     const bucketRows = aggregateByModelName(rowsForProduct(rows, product, bucket.start, bucket.end))
-    const byModel = new Map(bucketRows.map((item) => [item.model, item.totalTokens]))
-    const segmentTokens = modelOrder.map((model) => ({ model, tokens: byModel.get(model) ?? 0 }))
-    const knownTokens = segmentTokens.reduce((sum, item) => sum + item.tokens, 0)
-    const totalTokens = bucketRows.reduce((sum, item) => sum + item.totalTokens, 0)
+    const byModel = new Map(bucketRows.map((item) => [item.model, modelUsageValue(item, metric)]))
+    const segments = modelOrder.map((model) => ({ model, value: byModel.get(model) ?? 0 }))
+    const knownValue = segments.reduce((sum, item) => sum + item.value, 0)
+    const totalValue = bucketRows.reduce((sum, item) => sum + modelUsageValue(item, metric), 0)
     return {
       date: bucket.label,
       segments: [
-        ...segmentTokens.map((item) => ({ model: item.model, value: round(item.tokens / 1_000_000_000_000, 4) })),
-        { model: "Other", value: round(Math.max(totalTokens - knownTokens, 0) / 1_000_000_000_000, 4) },
+        ...segments.map((item) => ({ model: item.model, value: usagePointValue(item.value, metric) })),
+        { model: "Other", value: usagePointValue(Math.max(totalValue - knownValue, 0), metric) },
       ],
     }
   })
+}
+
+function modelUsageValue(item: ModelAggregate, metric: "tokens" | "users") {
+  if (metric === "users") return item.uniqueUsers
+  return item.totalTokens
+}
+
+function usagePointValue(value: number, metric: "tokens" | "users") {
+  if (metric === "users") return value
+  return round(value / 1_000_000_000_000, 4)
 }
 
 function buildLeaderboard(rows: StatMetricRow[], product: UsageProduct, rankWindow: DateWindow) {
@@ -397,15 +682,20 @@ function buildLeaderboard(rows: StatMetricRow[], product: UsageProduct, rankWind
     }))
 }
 
-function buildMarketShare(rows: ProviderMetricRow[], product: UsageProduct, range: UsageRange, window: DateWindow) {
+function buildMarketShare(rows: StatMetricRow[], product: UsageProduct, range: UsageRange, window: DateWindow) {
+  const providerOrder = aggregateByProvider(rowsForProduct(rows, product, window.start, window.end))
+    .filter((item) => item.provider !== "unknown")
+    .toSorted((a, b) => b.tokens - a.tokens || a.provider.localeCompare(b.provider))
+    .slice(0, 8)
+    .map((item) => item.provider)
+
   return createBuckets(window, range).flatMap((bucket) => {
-    const total = aggregateByProvider(rowsForProduct(rows, product, bucket.start, bucket.end)).toSorted(
-      (a, b) => b.tokens - a.tokens,
-    )
+    const total = aggregateByProvider(rowsForProduct(rows, product, bucket.start, bucket.end))
     const totalTokens = total.reduce((sum, item) => sum + item.tokens, 0)
     if (totalTokens === 0) return []
 
-    const authors = total.slice(0, 8)
+    const byProvider = new Map(total.map((item) => [item.provider, item.tokens]))
+    const authors = providerOrder.map((provider) => ({ provider, tokens: byProvider.get(provider) ?? 0 }))
     const knownTokens = authors.reduce((sum, item) => sum + item.tokens, 0)
     const withOther = [...authors, { provider: "Other", tokens: Math.max(totalTokens - knownTokens, 0) }].filter(
       (item) => item.tokens > 0,
@@ -414,19 +704,19 @@ function buildMarketShare(rows: ProviderMetricRow[], product: UsageProduct, rang
     return [
       {
         date: bucket.label,
-        total: round(totalTokens / 1_000_000_000_000, 2),
+        total: round(totalTokens / 1_000_000_000_000, 6),
         authors: withOther.map((item) => ({
           author: item.provider === "Other" ? "Other" : formatProvider(item.provider),
           share: round((item.tokens / totalTokens) * 100, 1),
-          tokens: round(item.tokens / 1_000_000_000_000, 2),
+          tokens: round(item.tokens / 1_000_000_000_000, 6),
         })),
       },
     ]
   })
 }
 
-function buildCountryStats(rows: GeoMetricRow[], window: DateWindow) {
-  const countries = aggregateByCountry(rowsForProduct(rows, SITE_PRODUCT, window.start, window.end))
+function buildCountryStats(rows: CountryTotalRow[]) {
+  const countries = rows
     .filter((item) => item.tokens > 0 && item.country !== "AQ")
     .toSorted((a, b) => b.tokens - a.tokens)
   const totalTokens = countries.reduce((sum, item) => sum + item.tokens, 0)
@@ -502,6 +792,7 @@ function buildModelUsage(rows: StatMetricRow[], window: DateWindow, range: Usage
     return {
       date: bucket.label,
       tokens: aggregate.totalTokens,
+      users: aggregate.uniqueUsers,
       sessions: aggregate.sessions,
       cost: round(microcentsToDollars(aggregate.totalCostMicrocents), 2),
     }
@@ -521,8 +812,8 @@ function buildModelTokenMix(aggregate: ModelAggregate): ModelMixEntry[] {
 }
 
 function buildModelPeers(peers: ModelAggregate[], rank: number, totalTokens: number): ModelPeerEntry[] {
-  const start = Math.max(0, Math.min(rank - 4, Math.max(peers.length - 7, 0)))
-  return peers.slice(start, start + 7).map((item, index) => ({
+  const start = Math.max(0, Math.min(rank - 5, Math.max(peers.length - 10, 0)))
+  return peers.slice(start, start + 10).map((item, index) => ({
     model: item.model,
     provider: item.provider,
     author: formatProvider(item.provider),
@@ -540,6 +831,7 @@ function rowsForProduct<T extends { periodStart: number; tier: string }>(
   end: number,
 ) {
   const windowRows = rows.filter((row) => row.periodStart >= start && row.periodStart < end)
+  if (product === SITE_PRODUCT) return windowRows.filter((row) => row.tier === "Go" || row.tier === "Free")
   if (product !== "All Users") return windowRows.filter((row) => row.tier === product)
 
   const allRows = windowRows.filter((row) => row.tier === "all")
@@ -566,25 +858,12 @@ function aggregateByModelName(rows: StatMetricRow[]) {
   )
 }
 
-function aggregateByProvider(rows: ProviderMetricRow[]) {
+function aggregateByProvider(rows: { provider: string; totalTokens: number }[]) {
   return Object.values(
     rows.reduce<Record<string, { provider: string; tokens: number }>>((result, row) => {
       result[row.provider] = {
         provider: row.provider,
         tokens: (result[row.provider]?.tokens ?? 0) + row.totalTokens,
-      }
-      return result
-    }, {}),
-  )
-}
-
-function aggregateByCountry(rows: GeoMetricRow[]) {
-  return Object.values(
-    rows.reduce<Record<string, { country: string; continent: string; tokens: number }>>((result, row) => {
-      result[row.country] = {
-        country: row.country,
-        continent: result[row.country]?.continent || row.continent,
-        tokens: (result[row.country]?.tokens ?? 0) + row.totalTokens,
       }
       return result
     }, {}),
@@ -601,6 +880,7 @@ function combineRowsForModel(model: string, rows: StatMetricRow[]): ModelAggrega
     model,
     provider: "unknown",
     sessions: 0,
+    uniqueUsers: 0,
     inputTokens: 0,
     outputTokens: 0,
     reasoningTokens: 0,
@@ -617,6 +897,7 @@ function combineModelAggregate(current: ModelAggregate | undefined, row: StatMet
     model: row.model,
     provider: row.provider,
     sessions: (current?.sessions ?? 0) + row.sessions,
+    uniqueUsers: (current?.uniqueUsers ?? 0) + row.uniqueUsers,
     inputTokens: (current?.inputTokens ?? 0) + row.inputTokens,
     outputTokens: (current?.outputTokens ?? 0) + row.outputTokens,
     reasoningTokens: (current?.reasoningTokens ?? 0) + row.reasoningTokens,
@@ -708,56 +989,24 @@ function normalizeStatRow(row: ModelStatMetric): StatMetricRow[] {
       periodStart,
       updatedAt,
       tier: normalizeTier(row.tier),
-      provider: row.provider || "unknown",
+      provider: statProvider(row.model, undefined, row.provider) || "unknown",
       model: row.model || "unknown",
     },
   ]
 }
 
-function normalizeProviderRow(row: ProviderStatMetric): ProviderMetricRow[] {
-  const periodStart = periodKeyTime(row.periodKey)
-  const updatedAt = dateTime(row.updatedAt)
-  if (!Number.isFinite(periodStart) || !Number.isFinite(updatedAt)) return []
-  return [
-    {
-      ...row,
-      periodStart,
-      updatedAt,
-      tier: normalizeTier(row.tier),
-      provider: row.provider || "unknown",
-    },
-  ]
-}
-
-function normalizeGeoRow(row: GeoStatMetric): GeoMetricRow[] {
-  const periodStart = periodKeyTime(row.periodKey)
-  const updatedAt = dateTime(row.updatedAt)
-  if (!Number.isFinite(periodStart) || !Number.isFinite(updatedAt)) return []
-  return [
-    {
-      ...row,
-      periodStart,
-      updatedAt,
-      tier: normalizeTier(row.tier),
-      provider: row.provider || "all",
-      model: row.model || "all",
-      country: row.country || "ZZ",
-      continent: row.continent || "",
-    },
-  ]
-}
-
-function normalizeTier(value: string) {
-  const normalized = value.toLowerCase()
-  if (normalized === "paid" || normalized === "zen") return "Zen"
-  if (normalized === "go") return "Go"
-  if (normalized === "enterprise") return "Enterprise"
-  if (normalized === "all") return "all"
-  return value
+function modelRowsWindow(rows: ModelStatMetric[], range: UsageRange): DateWindow | undefined {
+  const periods = rows.map((row) => periodKeyTime(row.periodKey)).filter(Number.isFinite)
+  if (periods.length === 0) return undefined
+  return getWindow(range, Math.min(...periods), Math.max(...periods))
 }
 
 function dateTime(value: Date | string) {
   return (value instanceof Date ? value : new Date(value)).getTime()
+}
+
+function periodKey(value: number) {
+  return new Date(value).toISOString().slice(0, 10)
 }
 
 function periodKeyTime(value: string) {
@@ -787,6 +1036,7 @@ function formatProvider(provider: string) {
     deepseek: "DeepSeek",
     google: "Google",
     minimax: "MiniMax",
+    meta: "Meta",
     moonshot: "Moonshot",
     moonshotai: "Moonshot",
     nvidia: "NVIDIA",

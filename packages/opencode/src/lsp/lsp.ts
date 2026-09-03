@@ -1,7 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { EventV2 } from "@opencode-ai/core/event"
 import * as LSPClient from "./client"
 import path from "path"
 import { pathToFileURL, fileURLToPath } from "url"
@@ -15,11 +14,10 @@ import { InstanceState } from "@/effect/instance-state"
 import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { LspEvent } from "@opencode-ai/schema/lsp-event"
 import { Plugin } from "@/plugin"
 
-export const Event = {
-  Updated: EventV2.define({ type: "lsp.updated", schema: {} }),
-}
+export const Event = LspEvent
 
 const Position = Schema.Struct({
   line: NonNegativeInt,
@@ -139,7 +137,7 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/LSP") {}
 
-export const layer = Layer.effect(
+const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
@@ -226,29 +224,16 @@ export const layer = Layer.effect(
           const root = await server.root(file, ctx)
           if (!root) continue
           const key = root + server.id
-          if (s.broken.has(key)) {
-            process.stderr.write(`[lsp.env-fix] skip-broken root=${root} server=${server.id}\n`)
-            continue
-          }
-          if (s.clients.find((x) => x.root === root && x.serverID === server.id)) {
-            process.stderr.write(`[lsp.env-fix] skip-warm root=${root} server=${server.id}\n`)
-            continue
-          }
-          if (s.spawning.get(key)) {
-            process.stderr.write(`[lsp.env-fix] skip-inflight root=${root} server=${server.id}\n`)
-            continue
-          }
+          if (s.broken.has(key)) continue
+          if (s.clients.find((x) => x.root === root && x.serverID === server.id)) continue
+          if (s.spawning.get(key)) continue
           set.add(root)
         }
         return [...set]
       })
-      process.stderr.write(`[lsp.env-fix] pre-fire roots=${roots.length} file=${file}\n`)
       for (const root of roots) {
         const result = yield* plugin.trigger("lsp.env", { cwd: root }, { env: {} as Record<string, string> })
         setEnvDelta(root, result.env)
-        process.stderr.write(
-          `[lsp.env-fix] post-fire root=${root} envKeys=${Object.keys(result.env).join(",") || "(empty)"} venv=${result.env.VIRTUAL_ENV ?? "undefined"} pathHead=${(result.env.PATH ?? "").split(":")[0] || "(empty)"}\n`,
-        )
       }
 
       const clients = yield* Effect.promise(async () => {
@@ -538,15 +523,12 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(
-  Layer.provide(Config.defaultLayer),
-  Layer.provide(RuntimeFlags.defaultLayer),
-  Layer.provide(EventV2Bridge.defaultLayer),
-  Layer.provide(Plugin.defaultLayer),
-)
-
 export * as Diagnostic from "./diagnostic"
 
-export const node = LayerNode.make(layer, [Config.node, RuntimeFlags.node, FSUtil.node, EventV2Bridge.node, Plugin.node])
+export const node = LayerNode.make({
+  service: Service,
+  layer: layer,
+  deps: [Config.node, RuntimeFlags.node, FSUtil.node, EventV2Bridge.node, Plugin.node],
+})
 
 export * as LSP from "./lsp"
